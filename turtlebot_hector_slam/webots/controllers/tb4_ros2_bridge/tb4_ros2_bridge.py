@@ -176,6 +176,10 @@ class Bridge:
         self.odom_pub.publish(o)
 
     def publish_scan(self):
+        # Webots R2025a returns a raw pointer that is NULL until the first
+        # measurement; slicing it segfaults instead of raising.
+        if hasattr(self.lidar, 'range_image') and not self.lidar.range_image:
+            return
         try:
             ranges = list(self.lidar.getRangeImage())
         except (ValueError, SystemError):
