@@ -33,5 +33,5 @@ Result of a full autonomous exploration run (`turtlebot_hector_slam/webots/resul
 ## Status
 
 - [x] Webots (SLAM + Nav2 + frontier exploration, scored against ground truth)
-- [ ] Gazebo
+- [~] Gazebo: TB4 maze sim runs headless and the SLAM + Nav2 + explorer stack drives it (`turtlebot_hector_slam/gazebo/run_gz_headless.sh`), but the sim runs at about 0.25x real time with software rendering and Hector lost tracking, giving a partly corrupted map (`gazebo/maze_partial_map.png`). Not scored; needs a GPU or tuning.
 - [ ] Real TurtleBot 4
