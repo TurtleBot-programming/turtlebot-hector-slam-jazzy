@@ -24,7 +24,7 @@ docker/build_export.sh     # on the build machine -> dist/tb4-hector-slam.tar.gz
 ./run.sh                   # on the other computer, then open http://localhost:8080
 ```
 
-The dashboard runs a connection-check pipeline against the robot (network, ROS 2 discovery, `/scan`, `/odom`, TF, velocity interface, competing nodes, dock/battery) and keeps Start locked until it passes. It then starts SLAM + Nav2 (optionally the explorer), shows the live map, drives the robot, sends goals, has an E-STOP, and saves the evidence the case study asks for (map, trajectory, screenshots, video, rosbag, zipped results with map statistics). See `docker/README.md`.
+The dashboard runs a connection-check pipeline against the robot (network, ROS 2 discovery, `/scan`, `/odom`, TF, velocity interface, competing nodes, dock/battery) and keeps Start locked until it passes. It can also run a headless Gazebo simulation from the same page (own ROS domain), undock/dock the robot and switch the lidar motor, with a one-click Quick start. It then starts SLAM + Nav2 (optionally the explorer), shows the live map, drives the robot, sends goals, has an E-STOP, and saves the evidence the case study asks for (map, trajectory, screenshots, video, rosbag, zipped results with map statistics). See `docker/README.md`.
 
 ![dashboard](turtlebot_hector_slam/docs/images/dashboard.png)
 

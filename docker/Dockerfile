@@ -8,12 +8,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-jazzy-nav2-bringup \
         ros-jazzy-turtlebot4-msgs \
         ros-jazzy-turtlebot4-description \
+        ros-jazzy-turtlebot4-simulator \
         ros-jazzy-irobot-create-msgs \
         ros-jazzy-tf-transformations \
         ros-jazzy-xacro \
         ros-jazzy-rmw-cyclonedds-cpp \
         ros-jazzy-rmw-fastrtps-cpp \
-        python3-aiohttp python3-numpy iputils-ping iproute2 \
+        python3-aiohttp python3-numpy iputils-ping iproute2 xvfb \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /ws

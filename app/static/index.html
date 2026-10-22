@@ -57,26 +57,59 @@
   dialog input, dialog select { width: 100%; padding: 7px 9px; background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; font: inherit; }
   dialog .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   a { color: var(--accent); }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; background: var(--panel2); }
+  .seg button.sel { background: var(--accent); color: #fff; }
+  #next { background: var(--panel2); border-bottom: 1px solid var(--line); padding: 8px 16px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  #next b { color: var(--accent); }
+  #toast { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 20; }
+  #toast div { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--accent); padding: 8px 12px; border-radius: 6px; box-shadow: 0 4px 14px rgba(0,0,0,.35); max-width: 380px; }
+  #toast .ok { border-left-color: var(--ok); } #toast .warn { border-left-color: var(--warn); } #toast .error { border-left-color: var(--fail); }
+  select.inline { padding: 6px 8px; background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; font: inherit; }
 </style>
 </head>
 <body>
 <header>
   <h1>TurtleBot 4 · Hector SLAM</h1>
   <span id="link"><span class="dot"></span><span id="linktxt">no robot data</span></span>
+  <span class="seg" id="target"><button data-t="real">Real robot</button><button data-t="gazebo">Gazebo sim</button></span>
   <span class="grow"></span>
   <span class="note" id="session"></span>
   <button id="btnSettings">Settings</button>
   <button id="estop" class="danger" title="Esc">E-STOP</button>
 </header>
+<div id="next"><span>Next: <b id="nextTxt">…</b></span><span class="grow"></span><button id="btnQuick" class="primary">Quick start</button></div>
 <div id="alert"></div>
+<div id="toast"></div>
 
 <main>
   <div>
+    <section id="simPanel" style="display:none">
+      <h2>0 · Simulation (Gazebo)</h2>
+      <div class="row">
+        <select id="simWorld" class="inline"><option>maze</option><option>warehouse</option><option>depot</option></select>
+        <select id="simModel" class="inline"><option value="standard">standard</option><option value="lite">lite</option></select>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button id="btnSimStart" class="primary">Start simulation</button><button id="btnSimStop">Stop</button>
+        <span class="badge" id="bSim">stopped</span>
+      </div>
+      <p class="note" id="simNote">Headless Gazebo inside this container on its own ROS domain, so it can never move a real robot. Without a GPU it renders in software and runs well below real time.</p>
+    </section>
     <section>
       <h2>1 · Connection checks</h2>
       <div class="row"><button id="btnCheck" class="primary">Run checks</button><span class="note" id="checkAge"></span></div>
       <div id="steps" style="margin-top:8px"></div>
       <p class="note" id="stepsNote">Checks the network, ROS 2 discovery, lidar, odometry, TF, velocity commands, competing nodes and the robot state. Start stays locked until they pass.</p>
+    </section>
+    <section>
+      <h2>Robot</h2>
+      <div class="row">
+        <button id="btnUndock">Undock</button><button id="btnDock">Dock</button>
+        <button id="btnLidarOn">Lidar on</button><button id="btnLidarOff">Lidar off</button>
+        <button id="btnHome" title="Navigate back to where mapping started (needs SLAM + Nav2 running)">Go to start</button>
+      </div>
+      <p class="note">Dock state: <b id="dockState">unknown</b>. Undock before mapping; Dock when finished. The Create 3 backs away from the dock, so leave about 1 m behind it.</p>
     </section>
     <section>
       <h2>2 · Run</h2>
@@ -155,6 +188,7 @@
       <div><label>ROS_DOMAIN_ID</label><input name="domain_id" type="number" min="0" max="232"></div>
       <div><label>RMW</label><select name="rmw"><option>rmw_fastrtps_cpp</option><option>rmw_cyclonedds_cpp</option></select></div>
     </div>
+    <p class="note">Real-robot link:</p>
     <label>Robot namespace (empty if none, e.g. /tb4)</label><input name="namespace" placeholder="(none)">
     <div class="two">
       <div><label>Robot IP (for the ping check)</label><input name="robot_ip" placeholder="192.168.x.x"></div>
@@ -165,7 +199,10 @@
       <div><label>Max teleop speed (m/s, rad/s)</label><div class="two"><input name="max_lin" type="number" step="0.01" min="0.05" max="0.3"><input name="max_ang" type="number" step="0.05" min="0.2" max="1.5"></div></div>
     </div>
     <label class="chk" style="color:var(--text)"><input type="checkbox" name="scan_watchdog"> Stop the robot automatically if the lidar stream is lost</label>
-    <label class="chk" style="color:var(--text)"><input type="checkbox" name="use_sim_time"> Simulation time (only for a simulator, leave off for the real robot)</label>
+    <div class="two">
+      <div><label>Gazebo ROS_DOMAIN_ID (isolated from the robot)</label><input name="sim_domain_id" type="number" min="0" max="232"></div>
+      <div></div>
+    </div>
     <p class="note" id="dlgErr" style="color:var(--fail)"></p>
     <div class="row" style="justify-content:flex-end;margin-top:10px">
       <button value="cancel" formnovalidate>Cancel</button><button id="btnSave" class="primary" value="save">Save</button>
@@ -175,9 +212,9 @@
 
 <script>
 const $ = s => document.querySelector(s);
-const state = { running: {}, settings: {}, pose: null, scan: null, map: null, mapImg: null, bbox: null, goalMode: false, goal: null, drag: null,
+const state = { simState: 'stopped', running: {}, settings: {}, pose: null, scan: null, map: null, mapImg: null, bbox: null, goalMode: false, goal: null, drag: null,
                 preflight: { ok: false, ts: 0 }, status: {}, tab: 'slam', logs: {}, recorder: null };
-const TABS = { slam: 'SLAM + Nav2', relay: 'Relay', helper: 'ROS helper', bag: 'Rosbag', map_saver: 'Map saver' };
+const TABS = { slam: 'SLAM + Nav2', relay: 'Relay', helper: 'ROS helper', sim: 'Simulation', sim_robot: 'Sim robot', bag: 'Rosbag', map_saver: 'Map saver' };
 
 // ---------- websocket ----------
 let ws;
@@ -196,8 +233,9 @@ async function api(path, body) {
 }
 function handle(m) {
   switch (m.type) {
-    case 'settings': state.settings = m.settings; $('#speed').max = m.settings.max_lin; if (+$('#speed').value > m.settings.max_lin) $('#speed').value = m.settings.max_lin; $('#speedv').textContent = (+$('#speed').value).toFixed(2) + ' m/s'; break;
-    case 'procs': state.running = m.running; $('#session').textContent = 'session ' + m.session; renderRun(); break;
+    case 'settings': state.settings = m.settings; renderTarget(); $('#speed').max = m.settings.max_lin; if (+$('#speed').value > m.settings.max_lin) $('#speed').value = m.settings.max_lin; $('#speedv').textContent = (+$('#speed').value).toFixed(2) + ' m/s'; break;
+    case 'toast': toast(m.text, m.level); break;
+    case 'procs': state.running = m.running; state.simState = m.sim_state; $('#session').textContent = 'session ' + m.session; renderRun(); break;
     case 'status': state.status = m; renderStatus(); break;
     case 'pose': state.pose = m; break;
     case 'scan': state.scan = m; break;
@@ -228,7 +266,11 @@ function renderRun() {
   $('#btnStop').disabled = !r.slam;
   for (const [id, k] of [['bSlam', 'slam'], ['bRelay', 'relay'], ['bBag', 'bag']]) $('#' + id).classList.toggle('on', !!r[k]);
   $('#btnBag').textContent = r.bag ? 'Stop rosbag' : 'Record rosbag';
-  $('#btnGoal').disabled = !r.slam;
+  $('#btnGoal').disabled = !r.slam; $('#btnHome').disabled = !r.slam;
+  $('#bSim').textContent = state.simState; $('#bSim').classList.toggle('on', state.simState === 'ready');
+  $('#btnSimStart').disabled = state.simState !== 'stopped'; $('#btnSimStop').disabled = state.simState === 'stopped';
+  $('#simWorld').disabled = $('#simModel').disabled = state.simState !== 'stopped';
+  renderNext();
   if (!r.slam && state.goalMode) toggleGoal();
   $('#checkAge').textContent = state.preflight.ts ? (state.preflight.ok ? 'passed' : 'failed') + ' · ' + Math.round(Date.now() / 1000 - state.preflight.ts) + ' s ago' : '';
 }
@@ -248,6 +290,8 @@ $('#alert').onclick = () => $('#alert').style.display = 'none';
 // ---------- status ----------
 function setLink(cls, txt) { $('#link .dot').className = 'dot ' + cls; $('#linktxt').textContent = txt; }
 function renderStatus() {
+  const d = state.status.docked; $('#dockState').textContent = d == null ? 'unknown' : (d ? 'docked' : 'undocked');
+  renderNext();
   const s = state.status, ok = s.scan_hz > 1 && s.odom_hz > 1;
   setLink(ok ? 'ok' : (s.scan_age == null && s.odom_age == null ? 'fail' : 'warn'), ok ? `robot linked · scan ${s.scan_hz} Hz` : (s.scan_age == null ? 'no robot data' : 'robot data stale'));
   $('#hScan').textContent = s.scan_hz + ' Hz'; $('#hOdom').textContent = s.odom_hz + ' Hz';
@@ -378,6 +422,65 @@ $('#form').onsubmit = async e => {
   try { await api('settings', o); $('#dlg').close(); } catch (err) { $('#dlgErr').textContent = err.message; }
 };
 $('#dlg').addEventListener('click', e => { if (e.target === $('#dlg')) $('#dlg').close(); });
+
+// ---------- target, simulation, robot actions ----------
+function toast(text, level = 'info') {
+  const d = document.createElement('div'); d.className = level; d.textContent = text; $('#toast').appendChild(d); setTimeout(() => d.remove(), 6000);
+}
+function renderTarget() {
+  const t = state.settings.target; document.querySelectorAll('#target button').forEach(b => b.classList.toggle('sel', b.dataset.t === t));
+  $('#simPanel').style.display = t === 'gazebo' ? '' : 'none';
+  if (state.settings.sim_world) { $('#simWorld').value = state.settings.sim_world; $('#simModel').value = state.settings.sim_model; }
+  $('#stepsNote').textContent = t === 'gazebo' ? 'Checks the simulated robot the same way as a real one.' : $('#stepsNote').textContent;
+  renderNext();
+}
+async function setSettings(o) { try { await api('settings', o); } catch (e) { showAlert(e.message); } }
+document.querySelectorAll('#target button').forEach(b => b.onclick = () => b.dataset.t !== state.settings.target && setSettings({ target: b.dataset.t }));
+$('#simWorld').onchange = () => setSettings({ sim_world: $('#simWorld').value });
+$('#simModel').onchange = () => setSettings({ sim_model: $('#simModel').value });
+$('#btnSimStart').onclick = async () => { toast('Starting Gazebo… this takes up to a minute'); try { const j = await api('sim/start'); toast(j.result, j.result.startsWith('started') ? 'ok' : 'error'); } catch (e) { showAlert(e.message); } };
+$('#btnSimStop').onclick = () => api('sim/stop').catch(e => showAlert(e.message));
+for (const [id, cmd] of [['btnUndock', 'undock'], ['btnDock', 'dock'], ['btnLidarOn', 'lidar_start'], ['btnLidarOff', 'lidar_stop']]) $('#' + id).onclick = () => send({ cmd });
+$('#btnDock').onclick = () => confirm('Dock the robot? Make sure the path to the dock is clear.') && send({ cmd: 'dock' });
+$('#btnHome').onclick = () => { state.goal = { x: 0, y: 0, yaw: 0 }; send({ cmd: 'goto_start' }); };
+
+function nextStep() {
+  const r = state.running, st = state.status, gz = state.settings.target === 'gazebo', fresh = Date.now() / 1000 - state.preflight.ts < 600;
+  if (gz && state.simState === 'stopped') return 'Start the simulation.';
+  if (gz && state.simState === 'starting') return 'Gazebo is starting…';
+  if (!state.preflight.ts) return 'Run the connection checks.';
+  if (!state.preflight.ok) return 'Fix the failed checks above, then re-run them.';
+  if (st.docked) return 'Undock the robot.';
+  if (!fresh && !r.slam) return 'Re-run the checks (they expire after 10 minutes).';
+  if (!r.slam) return 'Start SLAM + Nav2.';
+  if (st.nav === 'navigating') return 'Robot is navigating to the goal.';
+  return 'Drive or send goals; save the map and evidence when done.';
+}
+function renderNext() { $('#nextTxt').textContent = state.settings.target ? nextStep() : '…'; }
+
+// Quick start: (simulation) -> checks -> undock -> checks again -> SLAM + Nav2
+let quickBusy = false;
+const wait = ms => new Promise(r => setTimeout(r, ms));
+async function until(cond, ms, label) { const t0 = Date.now(); while (!cond()) { if (Date.now() - t0 > ms) throw new Error(label + ' timed out'); await wait(500); } }
+$('#btnQuick').onclick = async () => {
+  if (quickBusy) return; quickBusy = true; $('#btnQuick').disabled = true;
+  try {
+    const gz = state.settings.target === 'gazebo';
+    if (state.running.slam) throw new Error('SLAM + Nav2 is already running');
+    if (gz && state.simState === 'stopped') { toast('Starting Gazebo…'); const j = await api('sim/start'); if (!j.result.startsWith('started')) throw new Error(j.result); await wait(4000); }
+    toast('Running connection checks…'); const c1 = await api('preflight'); if (!c1.ok) throw new Error('Connection checks failed: see the list on the left.');
+    if (state.status.docked) {
+      toast('Undocking…'); send({ cmd: 'undock' });
+      await until(() => state.status.docked === false, gz ? 180000 : 60000, 'Undock');
+      toast('Undocked', 'ok'); await wait(1500);
+      const c2 = await api('preflight'); if (!c2.ok) throw new Error('Checks failed after undocking.');
+    }
+    const explore = $('#explore').checked;
+    if (explore && !confirm('Quick start will begin AUTONOMOUS exploration: the robot drives itself. Area clear and someone ready at E-STOP?')) throw new Error('Cancelled');
+    const j = await api('start', { explore, force: false }); if (j.result !== 'started') throw new Error(j.result);
+    toast('SLAM + Nav2 started', 'ok');
+  } catch (e) { toast(e.message, 'error'); } finally { quickBusy = false; $('#btnQuick').disabled = false; }
+};
 
 connect();
 </script>

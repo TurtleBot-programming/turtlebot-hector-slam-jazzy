@@ -13,5 +13,7 @@ if ! docker image inspect "$IMG" >/dev/null 2>&1; then
 fi
 mkdir -p data
 echo "Dashboard: http://localhost:${PORT:-8080}   (Ctrl+C to stop)"
-exec docker run --rm -it --name tb4-hector-slam --network host --ipc host \
+# A GPU (/dev/dri) makes the Gazebo simulation much faster; without one it renders in software.
+GPU=(); [ -d /dev/dri ] && GPU=(--device /dev/dri)
+exec docker run --rm -it --name tb4-hector-slam --network host --ipc host "${GPU[@]}" \
   -e PORT="${PORT:-8080}" -v "$PWD/data:/data" "$IMG"

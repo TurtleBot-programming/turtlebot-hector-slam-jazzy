@@ -10,4 +10,5 @@ services:
     ipc: host
     volumes:
       - ../data:/data
+    # devices: ["/dev/dri:/dev/dri"]   # uncomment on a machine with a GPU for a faster Gazebo
     restart: "no"

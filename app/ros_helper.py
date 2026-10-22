@@ -41,9 +41,11 @@ from sensor_msgs.msg import BatteryState, LaserScan
 from tf2_ros import Buffer, TransformListener
 
 try:
+    from irobot_create_msgs.action import Dock, Undock
     from irobot_create_msgs.msg import DockStatus
-except ImportError:  # only needed for the "is the robot docked" check
-    DockStatus = None
+except ImportError:  # only needed for dock state and the dock/undock buttons
+    DockStatus = Dock = Undock = None
+from std_srvs.srv import Empty
 
 OUT_LOCK = threading.Lock()
 
@@ -123,6 +125,13 @@ class Helper(Node):
             self.create_subscription(DockStatus, f'{ns}/dock_status', self.on_dock,
                                      qos_profile_sensor_data)
         self.nav = ActionClient(self, NavigateToPose, f'{ns}/navigate_to_pose')
+        self.dock_clients = {}
+        if Dock:
+            self.dock_clients = {'dock': ActionClient(self, Dock, f'{ns}/dock'),
+                                 'undock': ActionClient(self, Undock, f'{ns}/undock')}
+        self.motor = {'start': self.create_client(Empty, f'{ns}/start_motor'),
+                      'stop': self.create_client(Empty, f'{ns}/stop_motor')}
+        self.robot_action = None
         self.wall_timer(0.2, self.tick_pose)
         self.wall_timer(0.5, self.tick_scan)
         self.wall_timer(1.0, self.tick_status)
@@ -184,6 +193,7 @@ class Helper(Node):
               'scan_age': self.rates['scan'].age(), 'odom_age': self.rates['odom'].age(),
               'battery': self.battery, 'docked': self.docked,
               'nav': self.nav_state, 'nav_remaining': self.nav_remaining,
+              'robot_action': self.robot_action,
               'tracking': bool(self.traj)})
 
     def tick_map(self):
@@ -279,6 +289,45 @@ class Helper(Node):
         else:
             self.vel_pub(False).publish(Twist())
 
+    def toast(self, text, level='info'):
+        emit({'type': 'toast', 'text': text, 'level': level})
+
+    def dock_action(self, which):
+        """Undock / Dock the Create 3 (irobot_create_msgs actions)."""
+        client = self.dock_clients.get(which)
+        if client is None:
+            return self.toast('irobot_create_msgs is not installed in this image', 'error')
+        if self.robot_action:
+            return self.toast(f'{self.robot_action} is still running', 'warn')
+        if not client.wait_for_server(timeout_sec=3.0):
+            return self.toast(f'{self.ns}/{which} action not available: is the robot (or the simulation) connected?', 'error')
+        self.robot_action = f'{which}ing'
+        self.toast(f'{which.capitalize()}ing…')
+        fut = client.send_goal_async((Undock if which == 'undock' else Dock).Goal())
+
+        def accepted(f):
+            gh = f.result()
+            if not gh.accepted:
+                self.robot_action = None
+                return self.toast(f'{which} goal rejected', 'error')
+            gh.get_result_async().add_done_callback(done)
+
+        def done(f):
+            self.robot_action = None
+            ok = f.result().status == 4
+            res = f.result().result
+            self.toast(f'{which.capitalize()} ' + ('succeeded' if ok else 'failed'), 'ok' if ok else 'error')
+            if which == 'dock' and ok and getattr(res, 'is_docked', True) is False:
+                self.toast('Dock finished but the robot is not docked: try again closer to the dock', 'warn')
+        fut.add_done_callback(accepted)
+
+    def lidar(self, which):
+        cli = self.motor[which]
+        if not cli.wait_for_service(timeout_sec=3.0):
+            return self.toast(f'{self.ns}/{which}_motor service not available (the TurtleBot 4 lidar driver provides it)', 'error')
+        cli.call_async(Empty.Request()).add_done_callback(
+            lambda f: self.toast(f'Lidar motor {which} sent', 'ok'))
+
     def traj_start(self, path):
         f = open(path, 'w', newline='')
         self.traj_file, self.traj = f, csv.writer(f)
@@ -346,6 +395,12 @@ def main():
                 node.send_goal(c['x'], c['y'], c.get('yaw', 0.0))
             elif cmd == 'cancel':
                 node.cancel_goal()
+            elif cmd in ('undock', 'dock'):
+                node.dock_action(cmd)
+            elif cmd in ('lidar_start', 'lidar_stop'):
+                node.lidar(cmd.split('_')[1])
+            elif cmd == 'goto_start':   # Hector's map frame starts at the robot's start pose
+                node.send_goal(0.0, 0.0, 0.0)
             elif cmd == 'estop':
                 node.estop()
             elif cmd == 'probe':

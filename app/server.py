@@ -29,16 +29,20 @@ DATA.mkdir(parents=True, exist_ok=True)
 SETTINGS_FILE = DATA / 'settings.json'
 DEFAULTS = {
     'namespace': '', 'domain_id': 0, 'rmw': 'rmw_fastrtps_cpp', 'robot_ip': '',
-    'discovery_server': '', 'use_sim_time': False, 'cmd_vel_mode': 'auto',
+    'discovery_server': '', 'cmd_vel_mode': 'auto',
     'max_lin': 0.2, 'max_ang': 0.8, 'scan_watchdog': True,
+    # 'real' = the TurtleBot 4 on the network, 'gazebo' = a simulation started from the dashboard.
+    # The simulation gets its own ROS domain so it can never move a real robot.
+    'target': 'real', 'sim_world': 'maze', 'sim_model': 'standard', 'sim_domain_id': 42,
 }
+WORLDS = ('maze', 'warehouse', 'depot')
 RMWS = ('rmw_fastrtps_cpp', 'rmw_cyclonedds_cpp')
 
 
 def load_settings():
     s = dict(DEFAULTS)
     try:
-        s.update(json.loads(SETTINGS_FILE.read_text()))
+        s.update({k: v for k, v in json.loads(SETTINGS_FILE.read_text()).items() if k in DEFAULTS})
     except Exception:
         pass
     return s
@@ -99,7 +103,8 @@ class App:
     def __init__(self):
         self.settings = load_settings()
         self.clients = set()
-        self.procs = {n: Proc(n, self) for n in ('helper', 'slam', 'relay', 'bag', 'map_saver')}
+        self.procs = {n: Proc(n, self) for n in ('helper', 'slam', 'relay', 'bag', 'map_saver', 'sim', 'sim_robot')}
+        self.sim_state = 'stopped'        # stopped | starting | ready
         self.cache = {}                  # last message of each type, replayed to new browsers
         self.preflight = {'steps': [], 'ok': False, 'ts': 0, 'stamper_needed': False}
         self.probe_waiters = {}
@@ -108,11 +113,20 @@ class App:
         self.alerted = False
 
     # ---- plumbing ----
+    @property
+    def sim(self):
+        return self.settings['target'] == 'gazebo'
+
+    @property
+    def ns(self):
+        n = '' if self.sim else self.settings['namespace'].strip('/')
+        return f'/{n}' if n else ''
+
     def env(self):
         s = self.settings
-        e = dict(os.environ, ROS_DOMAIN_ID=str(s['domain_id']), RMW_IMPLEMENTATION=s['rmw'],
-                 ROS_LOCALHOST_ONLY='0')
-        if s['discovery_server']:
+        e = dict(os.environ, ROS_DOMAIN_ID=str(s['sim_domain_id'] if self.sim else s['domain_id']),
+                 RMW_IMPLEMENTATION=s['rmw'], ROS_LOCALHOST_ONLY='0')
+        if s['discovery_server'] and not self.sim:
             e['ROS_DISCOVERY_SERVER'] = s['discovery_server']
             e['ROS_SUPER_CLIENT'] = 'True'
         else:
@@ -136,15 +150,18 @@ class App:
                 self.clients.discard(ws)
 
     async def send_procs(self):
-        await self.broadcast({'type': 'procs', 'running': {n: p.running for n, p in self.procs.items()},
-                              'session': self.session})
+        await self.broadcast(self.procs_msg())
+
+    def procs_msg(self):
+        return {'type': 'procs', 'running': {n: p.running for n, p in self.procs.items()},
+                'session': self.session, 'sim_state': self.sim_state}
 
     # ---- helper (rclpy) ----
     async def start_helper(self):
         await self.procs['helper'].stop(3)
         s = self.settings
-        argv = ['python3', str(APP / 'ros_helper.py'), '--namespace', s['namespace']]
-        if s['use_sim_time']:
+        argv = ['python3', str(APP / 'ros_helper.py'), '--namespace', self.ns]
+        if self.sim:
             argv.append('--sim-time')
         await self.procs['helper'].start(argv, on_line=self.on_helper_line, stdin=True)
 
@@ -153,6 +170,8 @@ class App:
             m = json.loads(line)
         except ValueError:
             return False                       # plain text (errors): goes to the log
+        if m['type'] == 'toast':
+            self.procs['helper'].add(f"[{m['level']}] {m['text']}")
         if m['type'] == 'probe_result':
             fut = self.probe_waiters.pop(m['id'], None)
             if fut and not fut.done():
@@ -198,11 +217,18 @@ class App:
             await self.broadcast({'type': 'preflight', 'step': step})
 
         await self.broadcast({'type': 'preflight_start'})
-        await add('settings', 'ROS settings', 'ok',
-                  f"domain {s['domain_id']}, {s['rmw']}, namespace '{s['namespace'] or '(none)'}'"
-                  + (f", discovery server {s['discovery_server']}" if s['discovery_server'] else ''))
+        if self.sim:
+            await add('settings', 'ROS settings', 'ok' if self.sim_state == 'ready' else 'fail',
+                      f"Gazebo simulation, isolated domain {s['sim_domain_id']}, {s['rmw']}",
+                      '' if self.sim_state == 'ready' else 'Start the simulation first (Simulation panel).')
+        else:
+            await add('settings', 'ROS settings', 'ok',
+                      f"domain {s['domain_id']}, {s['rmw']}, namespace '{s['namespace'] or '(none)'}'"
+                      + (f", discovery server {s['discovery_server']}" if s['discovery_server'] else ''))
 
-        if s['robot_ip']:
+        if self.sim:
+            await add('ping', 'Robot reachable', 'ok', 'simulated robot, no network involved')
+        elif s['robot_ip']:
             p = await asyncio.create_subprocess_exec('ping', '-c', '2', '-W', '2', s['robot_ip'],
                                                      stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
             out = (await p.communicate())[0].decode()
@@ -255,8 +281,7 @@ class App:
         else:
             await add('tf', 'TF tree', 'ok', f"odom → base_link → {frame}")
 
-        ns = s['namespace'].strip('/')
-        ns = f'/{ns}' if ns else ''
+        ns = self.ns
         mode = s['cmd_vel_mode']
         stamped_ok = pr['cmd_vel_subs'] > 0 and any('TwistStamped' in t for t in pr['cmd_vel_types'])
         plain_ok = pr['unstamped_subs'] > 0
@@ -311,14 +336,14 @@ class App:
         s = self.settings
         if self.preflight['stamper_needed'] or s['cmd_vel_mode'] == 'stamped':
             if not self.procs['relay'].running:
-                ns = ('/' + s['namespace'].strip('/')) if s['namespace'].strip('/') else ''
+                ns = self.ns
                 await self.procs['relay'].start(['ros2', 'run', 'tb4_hector_slam', 'cmd_vel_stamper.py',
                                                  '--in', f'{ns}/cmd_vel_unstamped', '--out', f'{ns}/cmd_vel'])
         argv = ['ros2', 'launch', 'tb4_hector_slam', 'slam_nav_launch.py',
-                f"use_sim_time:={'true' if s['use_sim_time'] else 'false'}",
+                f"use_sim_time:={'true' if self.sim else 'false'}",
                 f"explore:={'true' if explore else 'false'}", 'use_rviz:=false']
-        if s['namespace'].strip('/'):
-            argv.append('namespace:=' + s['namespace'])
+        if self.ns:
+            argv.append('namespace:=' + self.ns)
         await self.procs['slam'].start(argv)
         self.procs['helper'].write({'cmd': 'traj_start', 'path': str(self.session_dir / 'trajectory.csv')})
         return 'started'
@@ -334,13 +359,60 @@ class App:
         await self.broadcast({'type': 'alert', 'text': 'EMERGENCY STOP sent: goals cancelled, zero velocity published. '
                               'The stack is still running; press Stop to shut it down.'})
 
+    # ---- Gazebo simulation (headless server + robot spawn) ----
+    async def start_sim(self):
+        if not self.sim:
+            return 'Switch the target to Gazebo first.'
+        if self.sim_state != 'stopped':
+            return 'simulation already ' + self.sim_state
+        s = self.settings
+        world = s['sim_world'] if s['sim_world'] in WORLDS else 'maze'
+        self.sim_state = 'starting'
+        await self.send_procs()
+        gpu = os.path.exists('/dev/dri')
+        ready = asyncio.Event()
+
+        def on_line(line):
+            if 'Serving world controls' in line:
+                ready.set()
+            return False
+
+        script = ('export GZ_SIM_RESOURCE_PATH=$(ros2 pkg prefix turtlebot4_description)/share:'
+                  '$(ros2 pkg prefix irobot_create_description)/share:$GZ_SIM_RESOURCE_PATH; '
+                  + ('' if gpu else 'export LIBGL_ALWAYS_SOFTWARE=1; ')
+                  + f'exec xvfb-run -a -s "-screen 0 1280x1024x24" gz sim -s -r --headless-rendering -v 3 /opt/ros/jazzy/share/turtlebot4_gz_bringup/worlds/{world}.sdf')
+        await self.procs['sim'].start(['bash', '-c', script], on_line=on_line)
+        try:
+            await asyncio.wait_for(ready.wait(), 90)
+        except asyncio.TimeoutError:
+            await self.stop_sim()
+            return 'Gazebo server did not start in 90 s: see the Simulation log.'
+        await asyncio.sleep(3)
+        # robot spawn + bridges; the clock bridge is started by turtlebot4_gz.launch.py normally, not by spawn
+        await self.procs['sim_robot'].start(['bash', '-c',
+            "ros2 run ros_gz_bridge parameter_bridge '/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock' & "
+            f"exec ros2 launch turtlebot4_gz_bringup turtlebot4_spawn.launch.py world:={world} "
+            f"model:={s['sim_model']} rviz:=false"])
+        self.sim_state = 'ready'
+        await self.send_procs()
+        await self.start_helper()
+        return 'started' + ('' if gpu else ' (software rendering: expect a slow simulation)')
+
+    async def stop_sim(self):
+        if self.procs['slam'].running:
+            await self.stop_slam()
+        await self.procs['sim_robot'].stop(10)
+        await self.procs['sim'].stop(10)
+        self.sim_state = 'stopped'
+        await self.send_procs()
+
     # ---- evidence ----
     async def save_map(self, name):
         name = re.sub(r'[^A-Za-z0-9_-]', '', name) or 'map'
-        ns = ('/' + self.settings['namespace'].strip('/')) if self.settings['namespace'].strip('/') else ''
+        ns = self.ns
         p = self.procs['map_saver']
         await p.start(['ros2', 'run', 'nav2_map_server', 'map_saver_cli', '-f', str(self.session_dir / name),
-                       '-t', f'{ns}/map', '--ros-args', '-p', f"use_sim_time:={'true' if self.settings['use_sim_time'] else 'false'}"])
+                       '-t', f'{ns}/map', '--ros-args', '-p', f"use_sim_time:={'true' if self.sim else 'false'}"])
         try:
             await asyncio.wait_for(p.p.wait(), 30)
         except asyncio.TimeoutError:
@@ -409,8 +481,7 @@ async def ws_handler(request):
     for m in st.cache.values():
         await ws.send_str(json.dumps(m))
     await ws.send_str(json.dumps({'type': 'preflight_replay', **st.preflight}))
-    await ws.send_str(json.dumps({'type': 'procs', 'running': {n: p.running for n, p in st.procs.items()},
-                                  'session': st.session}))
+    await ws.send_str(json.dumps(st.procs_msg()))
     for n, p in st.procs.items():
         await ws.send_str(json.dumps({'type': 'log_replay', 'proc': n, 'lines': list(p.log)[-300:]}))
     async for msg in ws:
@@ -423,7 +494,7 @@ async def ws_handler(request):
             ang = max(-s['max_ang'], min(s['max_ang'], float(c['ang'])))
             st.procs['helper'].write({'cmd': 'vel', 'lin': lin, 'ang': ang,
                                       'mode': 'stamped' if s['cmd_vel_mode'] == 'stamped' else 'auto'})
-        elif c.get('cmd') in ('goal', 'cancel'):
+        elif c.get('cmd') in ('goal', 'cancel', 'undock', 'dock', 'lidar_start', 'lidar_stop', 'goto_start'):
             st.procs['helper'].write(c)
         elif c.get('cmd') == 'estop':
             await st.estop()
@@ -449,8 +520,14 @@ async def api_settings(request):
         s[k] = type(default)(v) if not isinstance(default, bool) else bool(v)
     if s['rmw'] not in RMWS:
         raise ValueError('rmw must be one of ' + ', '.join(RMWS))
+    if s['target'] not in ('real', 'gazebo') or s['sim_world'] not in WORLDS or s['sim_model'] not in ('standard', 'lite'):
+        raise ValueError('invalid target / world / model')
     if app_state.procs['slam'].running:
         raise ValueError('Stop the SLAM stack before changing settings.')
+    if app_state.sim_state != 'stopped' and (s['target'] != app_state.settings['target'] or s['sim_world'] != app_state.settings['sim_world']
+                                             or s['sim_model'] != app_state.settings['sim_model']
+                                             or s['sim_domain_id'] != app_state.settings['sim_domain_id']):
+        raise ValueError('Stop the simulation before changing the target, world, model or domain.')
     app_state.settings = s
     SETTINGS_FILE.write_text(json.dumps(s, indent=2))
     app_state.preflight = {'steps': [], 'ok': False, 'ts': 0, 'stamper_needed': False}
@@ -470,6 +547,14 @@ async def api_preflight(request):
 async def api_start(request):
     b = await request.json()
     return {'result': await app_state.start_slam(bool(b.get('explore')), bool(b.get('force')))}
+
+
+@jr
+async def api_sim(request):
+    if request.match_info['action'] == 'start':
+        return {'result': await app_state.start_sim()}
+    await app_state.stop_sim()
+    return {'result': 'stopped'}
 
 
 @jr
@@ -505,7 +590,7 @@ async def api_bag(request):
     action = request.match_info['action']
     p = st.procs['bag']
     if action == 'start' and not p.running:
-        ns = ('/' + st.settings['namespace'].strip('/')) if st.settings['namespace'].strip('/') else ''
+        ns = st.ns
         topics = [f'{ns}/{t}' for t in ('scan', 'odom', 'map', 'tf', 'tf_static')]
         await p.start(['ros2', 'bag', 'record', '-o', str(st.session_dir / 'rosbag'), *topics])
     elif action == 'stop':
@@ -541,7 +626,7 @@ def main():
     app.add_routes([
         web.get('/', index), web.get('/ws', ws_handler),
         web.post('/api/settings', api_settings), web.post('/api/preflight', api_preflight),
-        web.post('/api/start', api_start), web.post('/api/stop', api_stop), web.post('/api/estop', api_estop),
+        web.post('/api/start', api_start), web.post('/api/stop', api_stop), web.post('/api/sim/{action}', api_sim), web.post('/api/estop', api_estop),
         web.post('/api/save_map', api_save_map), web.post('/api/upload/{kind}', api_upload),
         web.post('/api/bag/{action}', api_bag), web.post('/api/export', api_export),
         web.post('/api/new_session', api_new_session),
