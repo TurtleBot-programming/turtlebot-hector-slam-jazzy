@@ -72,29 +72,32 @@
 <header>
   <h1>TurtleBot 4 · Hector SLAM</h1>
   <span id="link"><span class="dot"></span><span id="linktxt">no robot data</span></span>
-  <span class="seg" id="target"><button data-t="real">Real robot</button><button data-t="gazebo">Gazebo sim</button></span>
+  <span class="seg" id="target"><button data-t="real">Real robot</button><button data-t="gazebo">Gazebo</button><button data-t="webots">Webots</button></span>
   <span class="grow"></span>
   <span class="note" id="session"></span>
   <button id="btnSettings">Settings</button>
   <button id="estop" class="danger" title="Esc">E-STOP</button>
 </header>
-<div id="next"><span>Next: <b id="nextTxt">…</b></span><span class="grow"></span><button id="btnQuick" class="primary">Quick start</button></div>
+<div id="next"><span>Next: <b id="nextTxt">…</b></span><span class="grow"></span><button id="btnQuick" class="primary" title="Start the simulator (if any), run the checks, undock, start SLAM + Nav2 + RViz">Quick start</button><button id="btnStopAll" class="danger" title="Stop SLAM + Nav2 and the simulator">Stop all</button></div>
 <div id="alert"></div>
 <div id="toast"></div>
 
 <main>
   <div>
     <section id="simPanel" style="display:none">
-      <h2>0 · Simulation (Gazebo)</h2>
+      <h2>0 · Simulation (<span id="simName">Gazebo</span>)</h2>
       <div class="row">
-        <select id="simWorld" class="inline"><option>maze</option><option>warehouse</option><option>depot</option></select>
-        <select id="simModel" class="inline"><option value="standard">standard</option><option value="lite">lite</option></select>
+        <select id="simWorld" class="inline"></select>
+        <span id="gzOpts" class="row">
+          <select id="simModel" class="inline"><option value="standard">standard</option><option value="lite">lite</option></select>
+          <select id="simRender" class="inline" title="Gazebo sensor rendering"><option value="software">software (reliable lidar)</option><option value="auto">GPU (lidar broken on some GPUs)</option></select>
+        </span>
       </div>
       <div class="row" style="margin-top:8px">
         <button id="btnSimStart" class="primary">Start simulation</button><button id="btnSimStop">Stop</button>
         <span class="badge" id="bSim">stopped</span>
       </div>
-      <p class="note" id="simNote">Headless Gazebo inside this container on its own ROS domain, so it can never move a real robot. Without a GPU it renders in software and runs well below real time.</p>
+      <p class="note" id="simNote">Runs inside this container on its own ROS domain, so it can never move a real robot.</p>
     </section>
     <section>
       <h2>1 · Connection checks</h2>
@@ -117,7 +120,7 @@
         <button id="btnStart" class="primary" disabled>Start SLAM + Nav2</button>
         <button id="btnStop" disabled>Stop</button>
       </div>
-      <label class="chk"><input type="checkbox" id="windows"> <span>Open RViz (Nav2) and Gazebo windows <span class="note" id="winNote"></span></span></label>
+      <label class="chk"><input type="checkbox" id="windows"> <span>Open the RViz (Nav2) window <span class="note" id="winNote"></span></span></label>
       <label class="chk"><input type="checkbox" id="explore"> Autonomous exploration (robot drives itself)</label>
       <label class="chk"><input type="checkbox" id="force"> Start even if checks failed</label>
       <div class="row" style="margin-top:6px">
@@ -430,23 +433,35 @@ function toast(text, level = 'info') {
 }
 function renderTarget() {
   const t = state.settings.target; document.querySelectorAll('#target button').forEach(b => b.classList.toggle('sel', b.dataset.t === t));
-  $('#simPanel').style.display = t === 'gazebo' ? '' : 'none';
-  if (state.settings.sim_world) { $('#simWorld').value = state.settings.sim_world; $('#simModel').value = state.settings.sim_model; }
-  $('#stepsNote').textContent = t === 'gazebo' ? 'Checks the simulated robot the same way as a real one.' : $('#stepsNote').textContent;
+  const sim = t !== 'real';
+  $('#simPanel').style.display = sim ? '' : 'none';
+  if (sim) {
+    $('#simName').textContent = t === 'gazebo' ? 'Gazebo' : 'Webots';
+    const worlds = t === 'gazebo' ? ['maze', 'warehouse', 'depot'] : ['hector_slam_test'];
+    $('#simWorld').innerHTML = worlds.map(w => `<option>${w}</option>`).join('');
+    $('#simWorld').value = state.settings.sim_world;
+    $('#simModel').value = state.settings.sim_model; $('#simRender').value = state.settings.sim_render;
+    $('#gzOpts').style.display = t === 'gazebo' ? '' : 'none';
+  }
+  ['btnUndock', 'btnDock'].forEach(id => $('#' + id).style.display = t === 'webots' ? 'none' : '');
+  if (!document.body.dataset.stepsNote) document.body.dataset.stepsNote = $('#stepsNote').textContent;
+  $('#stepsNote').textContent = sim ? 'Checks the simulated robot the same way as a real one.' : document.body.dataset.stepsNote;
   renderNext();
 }
 async function setSettings(o) { try { await api('settings', o); } catch (e) { showAlert(e.message); } }
 document.querySelectorAll('#target button').forEach(b => b.onclick = () => b.dataset.t !== state.settings.target && setSettings({ target: b.dataset.t }));
 $('#simWorld').onchange = () => setSettings({ sim_world: $('#simWorld').value });
 $('#simModel').onchange = () => setSettings({ sim_model: $('#simModel').value });
-$('#btnSimStart').onclick = async () => { toast('Starting Gazebo… this takes up to a minute'); try { const j = await api('sim/start'); toast(j.result, j.result.startsWith('started') ? 'ok' : 'error'); } catch (e) { showAlert(e.message); } };
+$('#simRender').onchange = () => setSettings({ sim_render: $('#simRender').value });
+$('#btnStopAll').onclick = async () => { send({ cmd: 'estop' }); toast('Stopping everything…'); try { await api('stop'); if (state.settings.target !== 'real') await api('sim/stop'); toast('Everything stopped', 'ok'); } catch (e) { showAlert(e.message); } };
+$('#btnSimStart').onclick = async () => { toast('Starting the simulator… this can take a minute'); try { const j = await api('sim/start'); toast(j.result, j.result.startsWith('started') ? 'ok' : 'error'); } catch (e) { showAlert(e.message); } };
 $('#btnSimStop').onclick = () => api('sim/stop').catch(e => showAlert(e.message));
 for (const [id, cmd] of [['btnUndock', 'undock'], ['btnDock', 'dock'], ['btnLidarOn', 'lidar_start'], ['btnLidarOff', 'lidar_stop']]) $('#' + id).onclick = () => send({ cmd });
 $('#btnDock').onclick = () => confirm('Dock the robot? Make sure the path to the dock is clear.') && send({ cmd: 'dock' });
 $('#btnHome').onclick = () => { state.goal = { x: 0, y: 0, yaw: 0 }; send({ cmd: 'goto_start' }); };
 
 function nextStep() {
-  const r = state.running, st = state.status, gz = state.settings.target === 'gazebo', fresh = Date.now() / 1000 - state.preflight.ts < 600;
+  const r = state.running, st = state.status, gz = state.settings.target !== 'real', fresh = Date.now() / 1000 - state.preflight.ts < 600;
   if (gz && state.simState === 'stopped') return 'Start the simulation.';
   if (gz && state.simState === 'starting') return 'Gazebo is starting…';
   if (!state.preflight.ts) return 'Run the connection checks.';
@@ -472,11 +487,11 @@ async function until(cond, ms, label) { const t0 = Date.now(); while (!cond()) {
 $('#btnQuick').onclick = async () => {
   if (quickBusy) return; quickBusy = true; $('#btnQuick').disabled = true;
   try {
-    const gz = state.settings.target === 'gazebo';
+    const gz = state.settings.target !== 'real';
     if (state.running.slam) throw new Error('SLAM + Nav2 is already running');
-    if (gz && state.simState === 'stopped') { toast('Starting Gazebo…'); const j = await api('sim/start'); if (!j.result.startsWith('started')) throw new Error(j.result); await wait(4000); }
+    if (gz && state.simState === 'stopped') { toast('Starting the simulator…'); const j = await api('sim/start'); if (!j.result.startsWith('started')) throw new Error(j.result); await wait(4000); }
     toast('Running connection checks…'); const c1 = await api('preflight'); if (!c1.ok) throw new Error('Connection checks failed: see the list on the left.');
-    if (state.status.docked) {
+    if (state.status.docked && state.settings.target !== 'webots') {
       toast('Undocking…'); send({ cmd: 'undock' });
       await until(() => state.status.docked === false, gz ? 180000 : 60000, 'Undock');
       toast('Undocked', 'ok'); await wait(1500);

@@ -31,12 +31,13 @@ DEFAULTS = {
     'namespace': '', 'domain_id': 0, 'rmw': 'rmw_fastrtps_cpp', 'robot_ip': '',
     'discovery_server': '', 'cmd_vel_mode': 'auto',
     'max_lin': 0.2, 'max_ang': 0.8, 'scan_watchdog': True,
-    # 'real' = the TurtleBot 4 on the network, 'gazebo' = a simulation started from the dashboard.
+    # 'real' = the TurtleBot 4 on the network, 'gazebo' / 'webots' = a simulation started from the dashboard.
     # The simulation gets its own ROS domain so it can never move a real robot.
     'show_windows': True,            # open the Gazebo GUI and RViz (needs a display in the container)
     'target': 'real', 'sim_world': 'maze', 'sim_model': 'standard', 'sim_domain_id': 42,
+    'sim_render': 'software',      # software = CPU rendering (correct lidar, slower); auto = GPU if /dev/dri exists (lidar is broken on the GPU path tested)
 }
-WORLDS = ('maze', 'warehouse', 'depot')
+WORLDS = {'gazebo': ('maze', 'warehouse', 'depot'), 'webots': ('hector_slam_test',)}
 RMWS = ('rmw_fastrtps_cpp', 'rmw_cyclonedds_cpp')
 
 
@@ -116,7 +117,7 @@ class App:
     # ---- plumbing ----
     @property
     def sim(self):
-        return self.settings['target'] == 'gazebo'
+        return self.settings['target'] in ('gazebo', 'webots')
 
     @property
     def gui_available(self):
@@ -228,7 +229,7 @@ class App:
         await self.broadcast({'type': 'preflight_start'})
         if self.sim:
             await add('settings', 'ROS settings', 'ok' if self.sim_state == 'ready' else 'fail',
-                      f"Gazebo simulation, isolated domain {s['sim_domain_id']}, {s['rmw']}",
+                      f"{s['target'].capitalize()} simulation, isolated domain {s['sim_domain_id']}, {s['rmw']}",
                       '' if self.sim_state == 'ready' else 'Start the simulation first (Simulation panel).')
         else:
             await add('settings', 'ROS settings', 'ok',
@@ -271,6 +272,10 @@ class App:
         if hz == 0:
             await add('scan', 'Lidar /scan', 'fail', 'no scan messages in 6 s',
                       'Is the RPLIDAR spinning? Is the robot on and undocked? On the robot: ros2 topic hz /scan.')
+        elif pr['scan_valid'] is False:
+            await add('scan', 'Lidar /scan', 'fail',
+                      f"{hz} Hz but the ranges are constant ({pr['scan_span']} m): the lidar is not seeing the world",
+                      'Simulator: set Render to software (the GPU path returns a broken lidar). Real robot: check the lidar is spinning and not covered.')
         else:
             await add('scan', 'Lidar /scan', 'ok' if hz >= 4 else 'warn',
                       f"{hz} Hz, frame '{frame}', publisher {pr['scan_qos']}",
@@ -318,7 +323,9 @@ class App:
                 await add('conflict', 'No competing SLAM/Nav2', 'ok', 'no map frame, no navigation nodes')
 
         b, d = pr['battery'], pr['docked']
-        if d:
+        if s['target'] == 'webots':
+            await add('state', 'Robot state', 'ok', 'simulated robot (no dock in Webots)')
+        elif d:
             await add('state', 'Robot state', 'warn', 'robot is docked', 'Undock it first: ros2 action send_goal /undock irobot_create_msgs/action/Undock {}')
         elif b is not None and b < 0.2:
             await add('state', 'Robot state', 'warn', f'battery {round(b * 100)} %', 'Low battery: charge before a long run.')
@@ -371,14 +378,16 @@ class App:
     # ---- Gazebo simulation (headless server + robot spawn) ----
     async def start_sim(self):
         if not self.sim:
-            return 'Switch the target to Gazebo first.'
+            return 'Switch the target to a simulator first.'
         if self.sim_state != 'stopped':
             return 'simulation already ' + self.sim_state
+        if self.settings['target'] == 'webots':
+            return await self.start_webots()
         s = self.settings
-        world = s['sim_world'] if s['sim_world'] in WORLDS else 'maze'
+        world = s['sim_world'] if s['sim_world'] in WORLDS['gazebo'] else 'maze'
         self.sim_state = 'starting'
         await self.send_procs()
-        gpu = os.path.exists('/dev/dri')
+        gpu = os.path.exists('/dev/dri') and s['sim_render'] != 'software'
         ready = asyncio.Event()
 
         def on_line(line):
@@ -405,15 +414,45 @@ class App:
             "ros2 run ros_gz_bridge parameter_bridge '/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock' & "
             f"exec ros2 launch turtlebot4_gz_bringup turtlebot4_spawn.launch.py world:={world} "
             f"model:={s['sim_model']} rviz:=false"])
-        if self.windows:   # Gazebo GUI client; the server above keeps running if the window is closed
-            await self.procs['sim_gui'].start(['bash', '-c',
-                'export GZ_GUI_PLUGIN_PATH=/opt/ros/jazzy/share/turtlebot4_gz_gui_plugins/lib:$GZ_GUI_PLUGIN_PATH; '
-                + ('' if gpu else 'export LIBGL_ALWAYS_SOFTWARE=1; ')
-                + f"exec gz sim -g --gui-config /opt/ros/jazzy/share/turtlebot4_gz_bringup/gui/{s['sim_model']}/gui.config"])
         self.sim_state = 'ready'
         await self.send_procs()
         await self.start_helper()
-        return 'started' + ('' if gpu else ' (software rendering: expect a slow simulation)') + ('; Gazebo window opening' if self.windows else '')
+        return 'started' + ('' if gpu else ' (software rendering: expect a slow simulation)')
+
+    async def start_webots(self):
+        """Webots (installed in the image) + the ROS 2 bridge extern controller."""
+        s = self.settings
+        self.sim_state = 'starting'
+        await self.send_procs()
+        ready = asyncio.Event()
+
+        def on_line(line):
+            if 'Waiting for local or remote connection' in line:
+                ready.set()
+            return False
+
+        world = f"/ws/webots/worlds/{s['sim_world']}.wbt"
+        if self.windows:
+            argv = ['webots', '--stdout', '--stderr', world]
+        else:
+            argv = ['xvfb-run', '-a', 'webots', '--mode=realtime', '--no-rendering', '--minimize', '--batch',
+                    '--stdout', '--stderr', world]
+        await self.procs['sim'].start(argv, on_line=on_line)
+        try:
+            await asyncio.wait_for(ready.wait(), 120)
+        except asyncio.TimeoutError:
+            await self.stop_sim()
+            return 'Webots did not start in 120 s: see the Simulation log.'
+        await asyncio.sleep(1)
+        await self.procs['sim_robot'].start(['bash', '-c',
+            'export PYTHONPATH=$WEBOTS_HOME/lib/controller/python:$PYTHONPATH '
+            'WEBOTS_CONTROLLER_URL=tcp://localhost:1234/Turtlebot4; '
+            'exec python3 /ws/webots/controllers/tb4_ros2_bridge/tb4_ros2_bridge.py --layout layout'])
+        await asyncio.sleep(6)
+        self.sim_state = 'ready'
+        await self.send_procs()
+        await self.start_helper()
+        return 'started' + ('; Webots window opening' if self.windows else '')
 
     async def stop_sim(self):
         if self.procs['slam'].running:
@@ -538,12 +577,16 @@ async def api_settings(request):
         s[k] = type(default)(v) if not isinstance(default, bool) else bool(v)
     if s['rmw'] not in RMWS:
         raise ValueError('rmw must be one of ' + ', '.join(RMWS))
-    if s['target'] not in ('real', 'gazebo') or s['sim_world'] not in WORLDS or s['sim_model'] not in ('standard', 'lite'):
+    if s['target'] not in ('real', 'gazebo', 'webots'):
+        raise ValueError('invalid target')
+    if s['target'] != 'real' and s['sim_world'] not in WORLDS[s['target']]:
+        s['sim_world'] = WORLDS[s['target']][0]       # target changed: pick that simulator's default world
+    if s['sim_world'] not in WORLDS['gazebo'] + WORLDS['webots'] or s['sim_model'] not in ('standard', 'lite') or s['sim_render'] not in ('auto', 'software'):
         raise ValueError('invalid target / world / model')
     if app_state.procs['slam'].running:
         raise ValueError('Stop the SLAM stack before changing settings.')
     if app_state.sim_state != 'stopped' and (s['target'] != app_state.settings['target'] or s['sim_world'] != app_state.settings['sim_world']
-                                             or s['sim_model'] != app_state.settings['sim_model']
+                                             or s['sim_model'] != app_state.settings['sim_model'] or s['sim_render'] != app_state.settings['sim_render']
                                              or s['sim_domain_id'] != app_state.settings['sim_domain_id']):
         raise ValueError('Stop the simulation before changing the target, world, model or domain.')
     app_state.settings = s

@@ -366,7 +366,16 @@ class Helper(Node):
         nodes = sorted({(n if not s or s == '/' else f'{s}/{n}').lstrip('/')
                         for n, s in self.get_node_names_and_namespaces()} - {'tb4_gui_helper'})
         scan_frame = self.scan_frame
-        emit({'type': 'probe_result', 'id': req_id,
+        scan_valid, scan_span = None, None
+        m = self.scan_msg
+        if m is not None:      # a working lidar sees a spread of distances; a stuck or broken one returns one value
+            fin = [r for r in m.ranges if math.isfinite(r) and m.range_min <= r <= m.range_max]
+            if fin:
+                scan_span = [round(min(fin), 2), round(max(fin), 2)]
+                scan_valid = len(fin) > 20 and max(fin) - min(fin) > 0.05
+            else:
+                scan_valid = False
+        emit({'type': 'probe_result', 'id': req_id, 'scan_valid': scan_valid, 'scan_span': scan_span,
               'nodes': nodes, 'n_topics': len(topics),
               'scan_hz': round(self.rates['scan'].hz(), 1), 'scan_frame': scan_frame,
               'scan_qos': qos_of(f'{ns}/scan'), 'odom_hz': round(self.rates['odom'].hz(), 1),

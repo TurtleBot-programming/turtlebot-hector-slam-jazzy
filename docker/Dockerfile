@@ -17,12 +17,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3-aiohttp python3-numpy iputils-ping iproute2 xvfb \
     && rm -rf /var/lib/apt/lists/*
 
+# Webots (the validated simulator), installed in the image so the dashboard can start it.
+RUN curl -fsSL -o /tmp/webots.deb https://github.com/cyberbotics/webots/releases/download/R2025a/webots_2025a_amd64.deb \
+    && apt-get update && apt-get install -y --no-install-recommends /tmp/webots.deb \
+    && rm -rf /tmp/webots.deb /var/lib/apt/lists/*
+ENV WEBOTS_HOME=/usr/local/webots
+
 WORKDIR /ws
 COPY hector_slam src/hector_slam
 COPY turtlebot_hector_slam/tb4_hector_slam src/tb4_hector_slam
 RUN . /opt/ros/jazzy/setup.sh \
     && colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release --event-handlers console_direct- \
     && rm -rf build log
+
+COPY turtlebot_hector_slam/webots /ws/webots
+RUN bash /ws/webots/protos/setup_meshes.sh
 
 COPY app /app
 COPY docker/entrypoint.sh /entrypoint.sh
