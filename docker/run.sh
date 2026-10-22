@@ -15,5 +15,15 @@ mkdir -p data
 echo "Dashboard: http://localhost:${PORT:-8080}   (Ctrl+C to stop)"
 # A GPU (/dev/dri) makes the Gazebo simulation much faster; without one it renders in software.
 GPU=(); [ -d /dev/dri ] && GPU=(--device /dev/dri)
-exec docker run --rm -it --name tb4-hector-slam --network host --ipc host "${GPU[@]}" \
+# Show the Gazebo and RViz windows on this computer's screen (needs a desktop session).
+X11=()
+if [ -n "${DISPLAY:-}" ] && [ -d /tmp/.X11-unix ]; then
+  X11=(-e DISPLAY="$DISPLAY" -e QT_X11_NO_MITSHM=1 -v /tmp/.X11-unix:/tmp/.X11-unix)
+  XA="${XAUTHORITY:-$HOME/.Xauthority}"
+  [ -f "$XA" ] && X11+=(-e XAUTHORITY=/tmp/.xauth -v "$XA:/tmp/.xauth:ro")
+  [ -n "${WAYLAND_DISPLAY:-}" ] && echo "Wayland session: windows open through XWayland."
+else
+  echo "No desktop session found: Gazebo/RViz windows are unavailable (the dashboard still works)."
+fi
+exec docker run --rm -it --name tb4-hector-slam --network host --ipc host "${GPU[@]}" "${X11[@]}" \
   -e PORT="${PORT:-8080}" -v "$PWD/data:/data" "$IMG"

@@ -117,6 +117,7 @@
         <button id="btnStart" class="primary" disabled>Start SLAM + Nav2</button>
         <button id="btnStop" disabled>Stop</button>
       </div>
+      <label class="chk"><input type="checkbox" id="windows"> <span>Open RViz (Nav2) and Gazebo windows <span class="note" id="winNote"></span></span></label>
       <label class="chk"><input type="checkbox" id="explore"> Autonomous exploration (robot drives itself)</label>
       <label class="chk"><input type="checkbox" id="force"> Start even if checks failed</label>
       <div class="row" style="margin-top:6px">
@@ -233,9 +234,9 @@ async function api(path, body) {
 }
 function handle(m) {
   switch (m.type) {
-    case 'settings': state.settings = m.settings; renderTarget(); $('#speed').max = m.settings.max_lin; if (+$('#speed').value > m.settings.max_lin) $('#speed').value = m.settings.max_lin; $('#speedv').textContent = (+$('#speed').value).toFixed(2) + ' m/s'; break;
+    case 'settings': state.settings = m.settings; renderTarget(); renderWindows(); $('#speed').max = m.settings.max_lin; if (+$('#speed').value > m.settings.max_lin) $('#speed').value = m.settings.max_lin; $('#speedv').textContent = (+$('#speed').value).toFixed(2) + ' m/s'; break;
     case 'toast': toast(m.text, m.level); break;
-    case 'procs': state.running = m.running; state.simState = m.sim_state; $('#session').textContent = 'session ' + m.session; renderRun(); break;
+    case 'procs': state.running = m.running; state.simState = m.sim_state; state.gui = m.gui_available; renderWindows(); $('#session').textContent = 'session ' + m.session; renderRun(); break;
     case 'status': state.status = m; renderStatus(); break;
     case 'pose': state.pose = m; break;
     case 'scan': state.scan = m; break;
@@ -456,6 +457,12 @@ function nextStep() {
   if (st.nav === 'navigating') return 'Robot is navigating to the goal.';
   return 'Drive or send goals; save the map and evidence when done.';
 }
+function renderWindows() {
+  const w = $('#windows'); if (!state.settings.target) return;
+  w.checked = !!state.settings.show_windows && !!state.gui; w.disabled = !state.gui || !!state.running.slam;
+  $('#winNote').textContent = state.gui ? '' : '(no display in the container: start it with run.sh from a desktop session)';
+}
+$('#windows').onchange = () => setSettings({ show_windows: $('#windows').checked });
 function renderNext() { $('#nextTxt').textContent = state.settings.target ? nextStep() : '…'; }
 
 // Quick start: (simulation) -> checks -> undock -> checks again -> SLAM + Nav2

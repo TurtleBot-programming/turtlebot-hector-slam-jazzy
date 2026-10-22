@@ -167,6 +167,14 @@ class Helper(Node):
         p = t.transform.translation
         return p.x, p.y, yaw_of(t.transform.rotation)
 
+    def tf_fresh(self, target, source, max_age=2.0):
+        """True only if the transform is still being published (the buffer keeps the last one forever)."""
+        try:
+            t = self.tf.get_latest_common_time(target, source)
+        except Exception:
+            return False
+        return (self.get_clock().now() - t).nanoseconds * 1e-9 < max_age
+
     def tick_pose(self):
         mp = self.lookup('map', 'base_link')
         od = self.lookup('odom', 'base_link')
@@ -364,7 +372,7 @@ class Helper(Node):
               'scan_qos': qos_of(f'{ns}/scan'), 'odom_hz': round(self.rates['odom'].hz(), 1),
               'odom_base': self.lookup('odom', 'base_link') is not None,
               'scan_tf': bool(scan_frame) and self.tf.can_transform('base_link', scan_frame, Time()),
-              'map_odom': self.tf.can_transform('map', 'odom', Time()),
+              'map_odom': self.tf_fresh('map', 'odom'),
               'cmd_vel_types': topics.get(f'{ns}/cmd_vel', []),
               'cmd_vel_subs': self.count_subscribers(f'{ns}/cmd_vel'),
               'unstamped_subs': self.count_subscribers(f'{ns}/cmd_vel_unstamped'),

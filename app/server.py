@@ -33,6 +33,7 @@ DEFAULTS = {
     'max_lin': 0.2, 'max_ang': 0.8, 'scan_watchdog': True,
     # 'real' = the TurtleBot 4 on the network, 'gazebo' = a simulation started from the dashboard.
     # The simulation gets its own ROS domain so it can never move a real robot.
+    'show_windows': True,            # open the Gazebo GUI and RViz (needs a display in the container)
     'target': 'real', 'sim_world': 'maze', 'sim_model': 'standard', 'sim_domain_id': 42,
 }
 WORLDS = ('maze', 'warehouse', 'depot')
@@ -103,7 +104,7 @@ class App:
     def __init__(self):
         self.settings = load_settings()
         self.clients = set()
-        self.procs = {n: Proc(n, self) for n in ('helper', 'slam', 'relay', 'bag', 'map_saver', 'sim', 'sim_robot')}
+        self.procs = {n: Proc(n, self) for n in ('helper', 'slam', 'relay', 'bag', 'map_saver', 'sim', 'sim_robot', 'sim_gui')}
         self.sim_state = 'stopped'        # stopped | starting | ready
         self.cache = {}                  # last message of each type, replayed to new browsers
         self.preflight = {'steps': [], 'ok': False, 'ts': 0, 'stamper_needed': False}
@@ -116,6 +117,14 @@ class App:
     @property
     def sim(self):
         return self.settings['target'] == 'gazebo'
+
+    @property
+    def gui_available(self):
+        return bool(os.environ.get('DISPLAY')) and os.path.exists('/tmp/.X11-unix')
+
+    @property
+    def windows(self):
+        return self.settings['show_windows'] and self.gui_available
 
     @property
     def ns(self):
@@ -154,7 +163,7 @@ class App:
 
     def procs_msg(self):
         return {'type': 'procs', 'running': {n: p.running for n, p in self.procs.items()},
-                'session': self.session, 'sim_state': self.sim_state}
+                'session': self.session, 'sim_state': self.sim_state, 'gui_available': self.gui_available}
 
     # ---- helper (rclpy) ----
     async def start_helper(self):
@@ -341,7 +350,7 @@ class App:
                                                  '--in', f'{ns}/cmd_vel_unstamped', '--out', f'{ns}/cmd_vel'])
         argv = ['ros2', 'launch', 'tb4_hector_slam', 'slam_nav_launch.py',
                 f"use_sim_time:={'true' if self.sim else 'false'}",
-                f"explore:={'true' if explore else 'false'}", 'use_rviz:=false']
+                f"explore:={'true' if explore else 'false'}", f"use_rviz:={'true' if self.windows else 'false'}"]
         if self.ns:
             argv.append('namespace:=' + self.ns)
         await self.procs['slam'].start(argv)
@@ -380,7 +389,10 @@ class App:
         script = ('export GZ_SIM_RESOURCE_PATH=$(ros2 pkg prefix turtlebot4_description)/share:'
                   '$(ros2 pkg prefix irobot_create_description)/share:$GZ_SIM_RESOURCE_PATH; '
                   + ('' if gpu else 'export LIBGL_ALWAYS_SOFTWARE=1; ')
-                  + f'exec xvfb-run -a -s "-screen 0 1280x1024x24" gz sim -s -r --headless-rendering -v 3 /opt/ros/jazzy/share/turtlebot4_gz_bringup/worlds/{world}.sdf')
+                  # a GPU plus a real display renders the sensors on the GPU; otherwise a virtual display is needed
+                  # (without any display OGRE aborts)
+                  + ('exec ' if gpu and self.gui_available else 'exec xvfb-run -a -s "-screen 0 1280x1024x24" ')
+                  + f'gz sim -s -r --headless-rendering -v 3 /opt/ros/jazzy/share/turtlebot4_gz_bringup/worlds/{world}.sdf')
         await self.procs['sim'].start(['bash', '-c', script], on_line=on_line)
         try:
             await asyncio.wait_for(ready.wait(), 90)
@@ -393,14 +405,20 @@ class App:
             "ros2 run ros_gz_bridge parameter_bridge '/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock' & "
             f"exec ros2 launch turtlebot4_gz_bringup turtlebot4_spawn.launch.py world:={world} "
             f"model:={s['sim_model']} rviz:=false"])
+        if self.windows:   # Gazebo GUI client; the server above keeps running if the window is closed
+            await self.procs['sim_gui'].start(['bash', '-c',
+                'export GZ_GUI_PLUGIN_PATH=/opt/ros/jazzy/share/turtlebot4_gz_gui_plugins/lib:$GZ_GUI_PLUGIN_PATH; '
+                + ('' if gpu else 'export LIBGL_ALWAYS_SOFTWARE=1; ')
+                + f"exec gz sim -g --gui-config /opt/ros/jazzy/share/turtlebot4_gz_bringup/gui/{s['sim_model']}/gui.config"])
         self.sim_state = 'ready'
         await self.send_procs()
         await self.start_helper()
-        return 'started' + ('' if gpu else ' (software rendering: expect a slow simulation)')
+        return 'started' + ('' if gpu else ' (software rendering: expect a slow simulation)') + ('; Gazebo window opening' if self.windows else '')
 
     async def stop_sim(self):
         if self.procs['slam'].running:
             await self.stop_slam()
+        await self.procs['sim_gui'].stop(5)
         await self.procs['sim_robot'].stop(10)
         await self.procs['sim'].stop(10)
         self.sim_state = 'stopped'

@@ -47,3 +47,8 @@ Safety: **E-STOP** (or Esc) cancels goals and publishes zero velocity. If the li
 source /opt/ros/jazzy/setup.bash && source install/setup.bash
 DATA_DIR=./data python3 app/server.py
 ```
+
+## Known issues
+
+- **Gazebo mapping is unresolved.** With a GPU the sim starts, the robot undocks and docks from the dashboard, and the Gazebo and RViz windows open. But Hector produced an empty map in the dashboard-started sim. One cause found: the `/clock` bridge falls behind (the sim publishes 333 clock messages/s with the default 3 ms step), so scans are stamped up to ~100 s ahead of the clock and every time-stamped TF lookup in Hector and Nav2 fails. Setting a 10 ms physics step on the live sim (`gz service -s /world/maze/set_physics ... "max_step_size: 0.01"`) brought scan lag to ~0.02 s, but Hector still did not map after a restart, so there is at least one more cause. Webots is the validated simulator.
+- After **Stop**, the helper can be slow to answer for a while on a loaded machine; saving settings restarts it.
