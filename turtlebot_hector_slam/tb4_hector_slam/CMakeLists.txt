@@ -16,8 +16,9 @@ target_compile_features(frontier_explorer PUBLIC cxx_std_17)
 ament_target_dependencies(frontier_explorer
   rclcpp rclcpp_action nav_msgs nav2_msgs geometry_msgs std_msgs tf2 tf2_ros)
 install(TARGETS frontier_explorer DESTINATION lib/${PROJECT_NAME})
-install(PROGRAMS scripts/floor_manager.py DESTINATION lib/${PROJECT_NAME})
+install(PROGRAMS scripts/floor_manager.py scripts/cmd_vel_stamper.py DESTINATION lib/${PROJECT_NAME})
 
+install(PROGRAMS scripts/preflight_real_robot.sh DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY
   launch
   config

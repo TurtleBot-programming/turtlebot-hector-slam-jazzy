@@ -78,15 +78,22 @@ ros2 launch tb4_hector_slam slam_nav_launch.py explore:=true use_sim_time:=true
 `blacklist_radius`, `min_goal_distance`, `goal_timeout`. When it logs
 "exploration complete", save the map with `map_saver_cli`.
 
-## Running on the physical TurtleBot 4
+## Running on the physical TurtleBot 4 (Jazzy)
 
-The same launch files are used on hardware; only `use_sim_time` differs.
+The same launch files are used on hardware; only `use_sim_time` differs (it defaults to `false`).
+Not yet run on the real robot.
 
-1. Undock the robot and make sure the Create 3 and the Raspberry Pi are on the same `ROS_DOMAIN_ID` / RMW (`rmw_fastrtps_cpp` or `rmw_cyclonedds_cpp`) as your laptop. Check `ros2 topic list` shows `/scan`, `/odom`, `/tf`.
+1. Undock the robot. Put the laptop (or the container, which uses host networking) on the robot's `ROS_DOMAIN_ID` and RMW (`rmw_fastrtps_cpp` or `rmw_cyclonedds_cpp`).
 2. Stop anything else publishing `map -> odom` on the robot (the stock `turtlebot4_navigation` `slam.launch.py` / `localization.launch.py`).
-3. On the laptop (or the Pi): `ros2 launch tb4_hector_slam slam_nav_launch.py`.
-4. If the robot uses a namespace: `namespace:=/robot_ns`.
-5. Drive slowly at first (Hector is scan-matching only, so fast rotation smears the map). Send goals with **2D Goal Pose** once the map has a few metres of structure.
+3. Run the preflight check; it only reads topics:
+   `jazzy ros2 run tb4_hector_slam preflight_real_robot.sh [/namespace]`
+   It checks `/scan`, `/odom`, `/tf`, the scan frame, who takes velocity commands, and that no other node owns `map -> odom`.
+4. If it reports that nothing takes `/cmd_vel_unstamped`, the robot only accepts `geometry_msgs/TwistStamped` on `/cmd_vel`. Run the relay next to the launch:
+   `ros2 run tb4_hector_slam cmd_vel_stamper.py --in cmd_vel_unstamped --out cmd_vel`
+5. `ros2 launch tb4_hector_slam slam_nav_launch.py` (add `namespace:=/robot_ns` if the robot is namespaced; add `explore:=true` for autonomous mapping, but supervise it at first).
+6. Drive slowly at first (Hector is scan-matching only, so fast rotation smears the map). Send goals with **2D Goal Pose** once the map has a few metres of structure.
+
+Things to check on the first real run: the scan `frame_id` exists in TF (the RPLIDAR is normally `rplidar_link`), `robot_radius` / speeds in `nav2.yaml` suit the robot, and `frontier_explorer` thresholds (`goal_timeout`, `min_frontier_cells`, ...) are guesses made in simulation.
 
 `hector_mapping` must include the sensor-data QoS fix for `/scan`: the RPLIDAR
 (and the Webots bridge) publish best-effort, which a default reliable
