@@ -22,7 +22,7 @@ the robot already publishes, and adds `map -> odom`.
 
 ## Dependencies
 
-- ROS 2 Humble, TurtleBot 4 packages (real robot or simulator)
+- ROS 2 Jazzy, TurtleBot 4 packages (real robot or simulator)
 - [`hector_slam_humble`](../../hector_slam_humble) (`hector_mapping`, `hector_trajectory_server`, `hector_nav_msgs`, ...) built in the same workspace
 - `nav2_common`, `nav2_map_server`, `rviz2`
 
