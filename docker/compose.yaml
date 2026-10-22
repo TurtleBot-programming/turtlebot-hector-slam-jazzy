@@ -1,0 +1,13 @@
+# docker compose -f docker/compose.yaml up      -> http://localhost:8080
+# Host networking and host IPC are needed so ROS 2 discovery reaches the robot.
+services:
+  tb4-slam:
+    image: tb4-hector-slam:latest
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    network_mode: host
+    ipc: host
+    volumes:
+      - ../data:/data
+    restart: "no"

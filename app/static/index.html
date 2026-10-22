@@ -1,0 +1,385 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TurtleBot 4 Hector SLAM</title>
+<style>
+  :root {
+    --bg: #12151a; --panel: #1b2028; --panel2: #232a35; --line: #2f3846; --text: #e6e9ee; --dim: #8d97a6;
+    --ok: #3ecf8e; --warn: #f5b942; --fail: #ff5d5d; --accent: #4c9bff;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #eef1f5; --panel: #fff; --panel2: #f3f5f8; --line: #d5dae2; --text: #1c2430; --dim: #5d6879; --accent: #1f6fe0; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; align-items: center; gap: 14px; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 650; }
+  .grow { flex: 1; }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--dim); margin-right: 6px; }
+  .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.fail { background: var(--fail); }
+  button { font: inherit; color: var(--text); background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 7px 12px; cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { background: var(--fail); border-color: var(--fail); color: #fff; font-weight: 700; }
+  #estop { padding: 9px 20px; font-size: 15px; letter-spacing: .5px; }
+  #alert { display: none; background: var(--fail); color: #fff; padding: 9px 16px; font-weight: 600; cursor: pointer; }
+  main { display: grid; grid-template-columns: 330px minmax(380px, 1fr) 360px; gap: 12px; padding: 12px; align-items: start; }
+  @media (max-width: 1150px) { main { grid-template-columns: 1fr; } }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .6px; color: var(--dim); margin: 0 0 10px; font-weight: 650; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .step { display: grid; grid-template-columns: 22px 1fr; gap: 2px 6px; padding: 6px 0; border-top: 1px solid var(--line); }
+  .step:first-of-type { border-top: 0; }
+  .step .t { font-weight: 600; } .step .d { color: var(--dim); font-size: 12.5px; grid-column: 2; }
+  .step .h { color: var(--warn); font-size: 12.5px; grid-column: 2; }
+  .icon { font-weight: 800; text-align: center; }
+  .ok .icon { color: var(--ok); } .warn .icon { color: var(--warn); } .fail .icon { color: var(--fail); } .run .icon { color: var(--accent); }
+  .badge { font-size: 12px; padding: 2px 8px; border-radius: 99px; background: var(--panel2); border: 1px solid var(--line); }
+  .badge.on { background: var(--ok); border-color: var(--ok); color: #04210f; font-weight: 600; }
+  label.chk { display: flex; gap: 8px; align-items: center; margin: 8px 0; color: var(--text); }
+  #mapwrap { position: relative; background: #0b0d10; border-radius: 8px; overflow: hidden; }
+  canvas { width: 100%; display: block; touch-action: none; }
+  #hud { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 12.5px; color: var(--dim); margin-top: 8px; }
+  #hud b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .pad { display: grid; grid-template-columns: repeat(3, 56px); grid-template-rows: repeat(2, 48px); gap: 6px; }
+  .pad button { padding: 0; font-size: 18px; user-select: none; }
+  .tabs { display: flex; gap: 4px; margin-bottom: 8px; flex-wrap: wrap; }
+  .tabs button { padding: 4px 10px; font-size: 12.5px; }
+  .tabs button.sel { background: var(--accent); border-color: var(--accent); color: #fff; }
+  pre#log { margin: 0; height: 340px; overflow: auto; background: #0b0d10; color: #cfd6e0; border-radius: 6px; padding: 8px; font: 12px/1.35 ui-monospace, Menlo, Consolas, monospace; white-space: pre-wrap; word-break: break-all; }
+  .note { color: var(--dim); font-size: 12.5px; margin: 6px 0 0; }
+  dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px; width: min(520px, 94vw); }
+  dialog::backdrop { background: rgba(0,0,0,.55); }
+  dialog label { display: block; margin: 10px 0 2px; font-size: 12.5px; color: var(--dim); }
+  dialog input, dialog select { width: 100%; padding: 7px 9px; background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; font: inherit; }
+  dialog .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>TurtleBot 4 · Hector SLAM</h1>
+  <span id="link"><span class="dot"></span><span id="linktxt">no robot data</span></span>
+  <span class="grow"></span>
+  <span class="note" id="session"></span>
+  <button id="btnSettings">Settings</button>
+  <button id="estop" class="danger" title="Esc">E-STOP</button>
+</header>
+<div id="alert"></div>
+
+<main>
+  <div>
+    <section>
+      <h2>1 · Connection checks</h2>
+      <div class="row"><button id="btnCheck" class="primary">Run checks</button><span class="note" id="checkAge"></span></div>
+      <div id="steps" style="margin-top:8px"></div>
+      <p class="note" id="stepsNote">Checks the network, ROS 2 discovery, lidar, odometry, TF, velocity commands, competing nodes and the robot state. Start stays locked until they pass.</p>
+    </section>
+    <section>
+      <h2>2 · Run</h2>
+      <div class="row">
+        <button id="btnStart" class="primary" disabled>Start SLAM + Nav2</button>
+        <button id="btnStop" disabled>Stop</button>
+      </div>
+      <label class="chk"><input type="checkbox" id="explore"> Autonomous exploration (robot drives itself)</label>
+      <label class="chk"><input type="checkbox" id="force"> Start even if checks failed</label>
+      <div class="row" style="margin-top:6px">
+        <span class="badge" id="bSlam">SLAM + Nav2</span><span class="badge" id="bRelay">cmd_vel relay</span><span class="badge" id="bBag">rosbag</span>
+      </div>
+    </section>
+    <section>
+      <h2>Drive</h2>
+      <div class="row" style="align-items:flex-start;gap:18px">
+        <div class="pad">
+          <span></span><button data-v="1,0" title="W / ↑">▲</button><span></span>
+          <button data-v="0,1" title="A / ←">◀</button><button data-v="-1,0" title="S / ↓">▼</button><button data-v="0,-1" title="D / →">▶</button>
+        </div>
+        <div style="flex:1;min-width:120px">
+          <label class="note" for="speed">Speed <b id="speedv"></b></label>
+          <input id="speed" type="range" min="0.05" max="0.2" step="0.01" value="0.1" style="width:100%">
+          <p class="note">Hold a button or W/A/S/D / arrow keys. Releasing stops the robot.</p>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div>
+    <section>
+      <h2>Map</h2>
+      <div id="mapwrap"><canvas id="cv" width="900" height="720"></canvas></div>
+      <div class="row" style="margin-top:8px">
+        <button id="btnGoal">Send goal: off</button>
+        <button id="btnCancel">Cancel goal</button>
+        <span class="note" id="goalHelp">Turn on, then click and drag on the map (drag sets the heading).</span>
+      </div>
+      <div id="hud">
+        <span>pose <b id="hPose">–</b></span><span>nav <b id="hNav">–</b></span><span>battery <b id="hBat">–</b></span>
+        <span>scan <b id="hScan">–</b></span><span>odom <b id="hOdom">–</b></span><span>explored <b id="hArea">–</b></span>
+      </div>
+    </section>
+  </div>
+
+  <div>
+    <section>
+      <h2>Evidence for the report</h2>
+      <div class="row">
+        <input id="mapname" value="map" style="width:90px;padding:6px 8px;background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:6px">
+        <button id="btnSaveMap">Save map</button>
+        <button id="btnShot">Screenshot</button>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button id="btnVideo">Record video</button>
+        <button id="btnBag">Record rosbag</button>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button id="btnExport" class="primary">Export results (.zip)</button>
+        <button id="btnNew">New session</button>
+      </div>
+      <p class="note" id="evNote">Saved to the session folder: map (.pgm/.yaml), trajectory CSV, screenshots, video, rosbag, check results, logs and a summary with map statistics.</p>
+    </section>
+    <section>
+      <h2>Logs</h2>
+      <div class="tabs" id="tabs"></div>
+      <pre id="log"></pre>
+    </section>
+  </div>
+</main>
+
+<dialog id="dlg">
+  <form method="dialog" id="form">
+    <h2>Robot link settings</h2>
+    <div class="two">
+      <div><label>ROS_DOMAIN_ID</label><input name="domain_id" type="number" min="0" max="232"></div>
+      <div><label>RMW</label><select name="rmw"><option>rmw_fastrtps_cpp</option><option>rmw_cyclonedds_cpp</option></select></div>
+    </div>
+    <label>Robot namespace (empty if none, e.g. /tb4)</label><input name="namespace" placeholder="(none)">
+    <div class="two">
+      <div><label>Robot IP (for the ping check)</label><input name="robot_ip" placeholder="192.168.x.x"></div>
+      <div><label>Discovery server (optional)</label><input name="discovery_server" placeholder="192.168.x.x:11811"></div>
+    </div>
+    <div class="two">
+      <div><label>Velocity commands</label><select name="cmd_vel_mode"><option value="auto">auto-detect</option><option value="plain">Twist (cmd_vel_unstamped)</option><option value="stamped">TwistStamped (cmd_vel)</option></select></div>
+      <div><label>Max teleop speed (m/s, rad/s)</label><div class="two"><input name="max_lin" type="number" step="0.01" min="0.05" max="0.3"><input name="max_ang" type="number" step="0.05" min="0.2" max="1.5"></div></div>
+    </div>
+    <label class="chk" style="color:var(--text)"><input type="checkbox" name="scan_watchdog"> Stop the robot automatically if the lidar stream is lost</label>
+    <label class="chk" style="color:var(--text)"><input type="checkbox" name="use_sim_time"> Simulation time (only for a simulator, leave off for the real robot)</label>
+    <p class="note" id="dlgErr" style="color:var(--fail)"></p>
+    <div class="row" style="justify-content:flex-end;margin-top:10px">
+      <button value="cancel" formnovalidate>Cancel</button><button id="btnSave" class="primary" value="save">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+const $ = s => document.querySelector(s);
+const state = { running: {}, settings: {}, pose: null, scan: null, map: null, mapImg: null, bbox: null, goalMode: false, goal: null, drag: null,
+                preflight: { ok: false, ts: 0 }, status: {}, tab: 'slam', logs: {}, recorder: null };
+const TABS = { slam: 'SLAM + Nav2', relay: 'Relay', helper: 'ROS helper', bag: 'Rosbag', map_saver: 'Map saver' };
+
+// ---------- websocket ----------
+let ws;
+function connect() {
+  ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws');
+  ws.onopen = () => $('#linktxt').textContent = 'connecting…';
+  ws.onclose = () => { setLink('fail', 'dashboard disconnected'); setTimeout(connect, 1500); };
+  ws.onmessage = e => handle(JSON.parse(e.data));
+}
+const send = o => ws && ws.readyState === 1 && ws.send(JSON.stringify(o));
+async function api(path, body) {
+  const r = await fetch('/api/' + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+  const j = await r.json();
+  if (j.error) throw new Error(j.error);
+  return j;
+}
+function handle(m) {
+  switch (m.type) {
+    case 'settings': state.settings = m.settings; $('#speed').max = m.settings.max_lin; if (+$('#speed').value > m.settings.max_lin) $('#speed').value = m.settings.max_lin; $('#speedv').textContent = (+$('#speed').value).toFixed(2) + ' m/s'; break;
+    case 'procs': state.running = m.running; $('#session').textContent = 'session ' + m.session; renderRun(); break;
+    case 'status': state.status = m; renderStatus(); break;
+    case 'pose': state.pose = m; break;
+    case 'scan': state.scan = m; break;
+    case 'map': loadMap(m); break;
+    case 'log': addLog(m.proc, m.line); break;
+    case 'log_replay': state.logs[m.proc] = m.lines.slice(); if (m.proc === state.tab) showLog(); break;
+    case 'preflight_start': $('#steps').innerHTML = ''; state.preflight.ok = false; $('#btnCheck').disabled = true; $('#btnCheck').textContent = 'Checking…'; renderRun(); break;
+    case 'preflight': addStep(m.step); break;
+    case 'preflight_done': state.preflight = { ok: m.ok, ts: m.ts }; $('#btnCheck').disabled = false; $('#btnCheck').textContent = 'Re-run checks'; renderRun(); break;
+    case 'preflight_replay': $('#steps').innerHTML = ''; (m.steps || []).forEach(addStep); state.preflight = { ok: m.ok, ts: m.ts }; renderRun(); break;
+    case 'alert': showAlert(m.text); break;
+  }
+}
+
+// ---------- checks + run ----------
+function addStep(s) {
+  const icon = { ok: '✓', warn: '!', fail: '✕' }[s.status];
+  const d = document.createElement('div'); d.className = 'step ' + s.status;
+  d.innerHTML = `<span class="icon">${icon}</span><span class="t"></span><span class="d"></span>${s.hint && s.status !== 'ok' ? '<span class="h"></span>' : ''}`;
+  d.querySelector('.t').textContent = s.title; d.querySelector('.d').textContent = s.detail;
+  if (s.hint && s.status !== 'ok') d.querySelector('.h').textContent = '→ ' + s.hint;
+  $('#steps').appendChild(d);
+}
+function renderRun() {
+  const r = state.running, fresh = Date.now() / 1000 - state.preflight.ts < 600;
+  const gate = (state.preflight.ok && fresh) || $('#force').checked;
+  $('#btnStart').disabled = r.slam || !gate;
+  $('#btnStop').disabled = !r.slam;
+  for (const [id, k] of [['bSlam', 'slam'], ['bRelay', 'relay'], ['bBag', 'bag']]) $('#' + id).classList.toggle('on', !!r[k]);
+  $('#btnBag').textContent = r.bag ? 'Stop rosbag' : 'Record rosbag';
+  $('#btnGoal').disabled = !r.slam;
+  if (!r.slam && state.goalMode) toggleGoal();
+  $('#checkAge').textContent = state.preflight.ts ? (state.preflight.ok ? 'passed' : 'failed') + ' · ' + Math.round(Date.now() / 1000 - state.preflight.ts) + ' s ago' : '';
+}
+setInterval(renderRun, 5000);
+$('#force').onchange = renderRun;
+$('#btnCheck').onclick = () => api('preflight').catch(e => showAlert(e.message));
+$('#btnStart').onclick = async () => {
+  const explore = $('#explore').checked;
+  if (explore && !confirm('The robot will drive by itself. Is the area clear and is someone ready to press E-STOP (Esc)?')) return;
+  try { const j = await api('start', { explore, force: $('#force').checked }); if (j.result !== 'started') showAlert(j.result); } catch (e) { showAlert(e.message); }
+};
+$('#btnStop').onclick = () => api('stop').catch(e => showAlert(e.message));
+$('#estop').onclick = () => send({ cmd: 'estop' });
+function showAlert(t) { const a = $('#alert'); a.textContent = t + '  (click to dismiss)'; a.style.display = 'block'; }
+$('#alert').onclick = () => $('#alert').style.display = 'none';
+
+// ---------- status ----------
+function setLink(cls, txt) { $('#link .dot').className = 'dot ' + cls; $('#linktxt').textContent = txt; }
+function renderStatus() {
+  const s = state.status, ok = s.scan_hz > 1 && s.odom_hz > 1;
+  setLink(ok ? 'ok' : (s.scan_age == null && s.odom_age == null ? 'fail' : 'warn'), ok ? `robot linked · scan ${s.scan_hz} Hz` : (s.scan_age == null ? 'no robot data' : 'robot data stale'));
+  $('#hScan').textContent = s.scan_hz + ' Hz'; $('#hOdom').textContent = s.odom_hz + ' Hz';
+  $('#hBat').textContent = s.battery == null ? '–' : Math.round(s.battery * 100) + ' %' + (s.docked ? ' (docked)' : '');
+  $('#hNav').textContent = s.nav + (s.nav_remaining != null ? ` · ${s.nav_remaining} m left` : '');
+}
+
+// ---------- map canvas ----------
+const cv = $('#cv'), cx = cv.getContext('2d');
+function loadMap(m) {
+  const img = new Image();
+  img.onload = () => {
+    const off = document.createElement('canvas'); off.width = m.w; off.height = m.h;
+    const c = off.getContext('2d'); c.drawImage(img, 0, 0);
+    const d = c.getImageData(0, 0, m.w, m.h).data;
+    let x0 = m.w, y0 = m.h, x1 = 0, y1 = 0;
+    for (let y = 0; y < m.h; y++) for (let x = 0; x < m.w; x++) if (d[(y * m.w + x) * 4] !== 205) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+    state.map = m; state.mapImg = img; state.bbox = x1 >= x0 ? [x0, y0, x1, y1] : null;
+    $('#hArea').textContent = m.explored_m2 + ' m²';
+  };
+  img.src = 'data:image/png;base64,' + m.png;
+}
+function view() {                       // visible window in map-image pixels, always contains the robot
+  const m = state.map; let [x0, y0, x1, y1] = state.bbox || [m.w / 2 - 40, m.h / 2 - 40, m.w / 2 + 40, m.h / 2 + 40];
+  if (state.pose && state.pose.map) { const p = w2i(state.pose.map[0], state.pose.map[1]); x0 = Math.min(x0, p[0]); x1 = Math.max(x1, p[0]); y0 = Math.min(y0, p[1]); y1 = Math.max(y1, p[1]); }
+  const pad = 20; x0 -= pad; y0 -= pad; x1 += pad; y1 += pad;
+  const s = Math.min(cv.width / (x1 - x0), cv.height / (y1 - y0));
+  return { s, x0: (x0 + x1) / 2 - cv.width / 2 / s, y0: (y0 + y1) / 2 - cv.height / 2 / s };
+}
+const w2i = (x, y) => [(x - state.map.ox) / state.map.res, state.map.h - (y - state.map.oy) / state.map.res];
+const i2w = (ix, iy) => [ix * state.map.res + state.map.ox, (state.map.h - iy) * state.map.res + state.map.oy];
+function toScreen(v, x, y) { const [ix, iy] = w2i(x, y); return [(ix - v.x0) * v.s, (iy - v.y0) * v.s]; }
+function draw() {
+  cx.fillStyle = '#0b0d10'; cx.fillRect(0, 0, cv.width, cv.height);
+  if (!state.map || !state.mapImg) { cx.fillStyle = '#8d97a6'; cx.font = '18px system-ui'; cx.textAlign = 'center'; cx.fillText('No map yet. Start SLAM + Nav2 and drive a little.', cv.width / 2, cv.height / 2); requestAnimationFrame(draw); return; }
+  const v = view(); cx.imageSmoothingEnabled = false;
+  cx.drawImage(state.mapImg, -v.x0 * v.s, -v.y0 * v.s, state.map.w * v.s, state.map.h * v.s);
+  const p = state.pose && state.pose.map;
+  if (p && state.scan) {              // lidar points
+    cx.fillStyle = 'rgba(255,90,90,.85)';
+    state.scan.r.forEach((r, i) => { if (r == null) return; const a = p[2] + state.scan.a0 + i * state.scan.da; const [sx, sy] = toScreen(v, p[0] + r * Math.cos(a), p[1] + r * Math.sin(a)); cx.fillRect(sx - 1.5, sy - 1.5, 3, 3); });
+  }
+  const arrow = (x, y, yaw, col, size) => { const [sx, sy] = toScreen(v, x, y); cx.save(); cx.translate(sx, sy); cx.rotate(-yaw); cx.fillStyle = col; cx.strokeStyle = '#fff'; cx.lineWidth = 2;
+    cx.beginPath(); cx.moveTo(size, 0); cx.lineTo(-size * .7, size * .7); cx.lineTo(-size * .4, 0); cx.lineTo(-size * .7, -size * .7); cx.closePath(); cx.fill(); cx.stroke(); cx.restore(); };
+  if (state.goal) arrow(state.goal.x, state.goal.y, state.goal.yaw, '#f5b942', 12);
+  if (p) { arrow(p[0], p[1], p[2], '#4c9bff', 13); $('#hPose').textContent = `${p[0].toFixed(2)}, ${p[1].toFixed(2)} m · ${(p[2] * 57.3).toFixed(0)}°`; }
+  else $('#hPose').textContent = 'no map→base_link';
+  const scale = 1 / state.map.res * v.s;   // 1 m scale bar
+  cx.fillStyle = '#fff'; cx.fillRect(16, cv.height - 22, scale, 4); cx.font = '13px system-ui'; cx.textAlign = 'left'; cx.fillText('1 m', 16, cv.height - 28);
+  if (state.recorder) { cx.fillStyle = '#ff5d5d'; cx.beginPath(); cx.arc(cv.width - 24, 24, 8, 0, 7); cx.fill(); }
+  requestAnimationFrame(draw);
+}
+draw();
+
+// goal by click-drag
+function evPos(e) { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * cv.width / r.width, (e.clientY - r.top) * cv.height / r.height]; }
+function evWorld(e) { const [px, py] = evPos(e), v = view(); return i2w(px / v.s + v.x0, py / v.s + v.y0); }
+cv.onpointerdown = e => { if (!state.goalMode || !state.map) return; const [x, y] = evWorld(e); state.drag = { x, y }; state.goal = { x, y, yaw: 0 }; cv.setPointerCapture(e.pointerId); };
+cv.onpointermove = e => { if (!state.drag) return; const [x, y] = evWorld(e); if (Math.hypot(x - state.drag.x, y - state.drag.y) > 0.08) state.goal.yaw = Math.atan2(y - state.drag.y, x - state.drag.x); };
+cv.onpointerup = e => { if (!state.drag) return; send({ cmd: 'goal', ...state.goal }); state.drag = null; toggleGoal(); };
+function toggleGoal() { state.goalMode = !state.goalMode; $('#btnGoal').textContent = 'Send goal: ' + (state.goalMode ? 'ON' : 'off'); $('#btnGoal').classList.toggle('primary', state.goalMode); cv.style.cursor = state.goalMode ? 'crosshair' : 'default'; }
+$('#btnGoal').onclick = toggleGoal;
+$('#btnCancel').onclick = () => { send({ cmd: 'cancel' }); state.goal = null; };
+
+// ---------- teleop ----------
+let vel = null, velTimer = null;
+$('#speed').oninput = () => $('#speedv').textContent = (+$('#speed').value).toFixed(2) + ' m/s';
+function setVel(lin, ang) {
+  clearInterval(velTimer);
+  if (lin === 0 && ang === 0) { send({ cmd: 'vel', lin: 0, ang: 0 }); return; }
+  const sp = +$('#speed').value, push = () => send({ cmd: 'vel', lin: lin * sp, ang: ang * Math.min(sp * 4, state.settings.max_ang || 0.8) });
+  push(); velTimer = setInterval(push, 100);
+}
+document.querySelectorAll('.pad button').forEach(b => {
+  const [l, a] = b.dataset.v.split(',').map(Number);
+  b.onpointerdown = e => { b.setPointerCapture(e.pointerId); setVel(l, a); };
+  b.onpointerup = b.onpointercancel = () => setVel(0, 0);
+});
+const KEYS = { w: [1, 0], ArrowUp: [1, 0], s: [-1, 0], ArrowDown: [-1, 0], a: [0, 1], ArrowLeft: [0, 1], d: [0, -1], ArrowRight: [0, -1] };
+let heldKey = null;
+addEventListener('keydown', e => {
+  if (e.target.matches('input, select, textarea')) return;
+  if (e.key === 'Escape') { send({ cmd: 'estop' }); return; }
+  if (e.key === ' ') { setVel(0, 0); e.preventDefault(); return; }
+  const k = KEYS[e.key]; if (k && heldKey !== e.key) { heldKey = e.key; setVel(...k); e.preventDefault(); }
+});
+addEventListener('keyup', e => { if (e.key === heldKey) { heldKey = null; setVel(0, 0); } });
+addEventListener('blur', () => { heldKey = null; setVel(0, 0); });
+
+// ---------- logs ----------
+function renderTabs() {
+  $('#tabs').innerHTML = '';
+  for (const [k, n] of Object.entries(TABS)) { const b = document.createElement('button'); b.textContent = n; b.className = k === state.tab ? 'sel' : ''; b.onclick = () => { state.tab = k; renderTabs(); showLog(); }; $('#tabs').appendChild(b); }
+}
+function showLog() { const el = $('#log'); el.textContent = (state.logs[state.tab] || []).join('\n'); el.scrollTop = el.scrollHeight; }
+function addLog(proc, line) {
+  const l = state.logs[proc] = state.logs[proc] || []; l.push(line); if (l.length > 1500) l.shift();
+  if (proc === state.tab) { const el = $('#log'), at = el.scrollTop + el.clientHeight >= el.scrollHeight - 30; el.textContent += (el.textContent ? '\n' : '') + line; if (at) el.scrollTop = el.scrollHeight; }
+}
+renderTabs();
+
+// ---------- evidence ----------
+const note = t => $('#evNote').textContent = t;
+$('#btnSaveMap').onclick = async () => { note('Saving map…'); try { const j = await api('save_map', { name: $('#mapname').value }); note(j.ok ? 'Map saved in ' + j.dir : 'Map save failed: see the Map saver log.'); state.tab = 'map_saver'; renderTabs(); showLog(); } catch (e) { note(e.message); } };
+$('#btnShot').onclick = () => cv.toBlob(async b => { const r = await fetch('/api/upload/screenshot', { method: 'POST', body: b }); note('Screenshot saved: ' + (await r.json()).saved); });
+$('#btnVideo').onclick = () => {
+  if (state.recorder) { state.recorder.stop(); return; }
+  const chunks = [], rec = new MediaRecorder(cv.captureStream(10), { mimeType: 'video/webm' });
+  rec.ondataavailable = e => chunks.push(e.data);
+  rec.onstop = async () => { state.recorder = null; $('#btnVideo').textContent = 'Record video'; const r = await fetch('/api/upload/video', { method: 'POST', body: new Blob(chunks, { type: 'video/webm' }) }); note('Video saved: ' + (await r.json()).saved); };
+  rec.start(1000); state.recorder = rec; $('#btnVideo').textContent = 'Stop video';
+};
+$('#btnBag').onclick = () => api('bag/' + (state.running.bag ? 'stop' : 'start')).catch(e => note(e.message));
+$('#btnExport').onclick = async () => { note('Exporting…'); try { const j = await api('export'); note(''); $('#evNote').innerHTML = `Exported: <a href="/results/${j.zip}" download>${j.zip}</a> (maps, trajectory, screenshots, video, rosbag, checks, logs, summary.json)`; } catch (e) { note(e.message); } };
+$('#btnNew').onclick = () => confirm('Start a new session folder? (running recordings are not moved)') && api('new_session');
+
+// ---------- settings ----------
+$('#btnSettings').onclick = () => {
+  const f = $('#form').elements, s = state.settings;
+  for (const k of Object.keys(s)) if (f[k]) { if (f[k].type === 'checkbox') f[k].checked = !!s[k]; else f[k].value = s[k]; }
+  $('#dlgErr').textContent = state.running.slam ? 'Stop the SLAM stack before changing settings.' : ''; $('#dlg').showModal();
+};
+$('#form').onsubmit = async e => {
+  if (e.submitter.value !== 'save') return;
+  e.preventDefault();
+  const f = $('#form').elements, o = {};
+  for (const k of Object.keys(state.settings)) if (f[k]) o[k] = f[k].type === 'checkbox' ? f[k].checked : (f[k].type === 'number' ? +f[k].value : f[k].value);
+  try { await api('settings', o); $('#dlg').close(); } catch (err) { $('#dlgErr').textContent = err.message; }
+};
+$('#dlg').addEventListener('click', e => { if (e.target === $('#dlg')) $('#dlg').close(); });
+
+connect();
+</script>
+</body>
+</html>

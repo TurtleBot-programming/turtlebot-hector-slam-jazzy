@@ -15,6 +15,19 @@ Bundle for running Hector SLAM on a TurtleBot 4 under **ROS 2 Jazzy**, across th
 
 Everything is built and run inside the Jazzy docker container (`jazzy` on the host drops you into it).
 
+## Dashboard (container + web UI)
+
+For running on another computer there is a self-contained image with everything built (Jazzy, patched Hector SLAM, Nav2, this package) and a browser dashboard. The other computer only needs Docker.
+
+```bash
+docker/build_export.sh     # on the build machine -> dist/tb4-hector-slam.tar.gz + dist/run.sh
+./run.sh                   # on the other computer, then open http://localhost:8080
+```
+
+The dashboard runs a connection-check pipeline against the robot (network, ROS 2 discovery, `/scan`, `/odom`, TF, velocity interface, competing nodes, dock/battery) and keeps Start locked until it passes. It then starts SLAM + Nav2 (optionally the explorer), shows the live map, drives the robot, sends goals, has an E-STOP, and saves the evidence the case study asks for (map, trajectory, screenshots, video, rosbag, zipped results with map statistics). See `docker/README.md`.
+
+![dashboard](turtlebot_hector_slam/docs/images/dashboard.png)
+
 ## Run in Webots
 
 Webots (snap) runs on the host, the ROS 2 bridge, SLAM and Nav2 run in the `jazzy` container. Run from inside `~/ros2_jazzy_ws` (the directory the container mounts). Headless mode does not work with the snap (Qt xcb fails under xvfb), so use a real display.

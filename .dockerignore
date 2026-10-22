@@ -1,0 +1,10 @@
+.git
+**/build
+**/install
+**/log
+**/__pycache__
+turtlebot_hector_slam/webots
+turtlebot_hector_slam/docs
+turtlebot_hector_slam/gazebo
+data
+*.tar.gz
