@@ -15,7 +15,7 @@ launch files on the physical TurtleBot 4 (ROS 2 Humble).
 
 | Path | What | Status |
 | ---- | ---- | ------ |
-| `tb4_hector_slam/` | ROS 2 package (this work) | builds, launches; **not yet run against Webots** |
+| `tb4_hector_slam/` | ROS 2 package (this work) | builds, launches; runs and is scored in Webots (see `webots/results/`) |
 | `webots/` | world, TurtleBot 4 PROTO, Python ROS 2 bridge, `run_sim.sh` | written in another session; untracked in git |
 | `../hector_slam_humble/` | Hector SLAM ROS 2 port (sibling of this repo) | **locally patched, see below** |
 
